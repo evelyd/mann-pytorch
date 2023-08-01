@@ -61,7 +61,7 @@ class GatingNetwork(nn.Module):
         """
 
         # Input processing
-        x = self.dropout(x)
+        x = self.dropout(x[:136])
 
         # Layer 1
         H0 = torch.matmul(self.w0, x) + self.b0

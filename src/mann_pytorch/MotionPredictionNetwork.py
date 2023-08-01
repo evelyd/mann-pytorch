@@ -63,7 +63,7 @@ class MotionPredictionNetwork(nn.Module):
         """
 
         # Input processing
-        x = torch.unsqueeze(x, -1)
+        x = torch.unsqueeze(x[:,:136], -1)
         x = self.dropout(x)
 
         # Layer 1

@@ -29,7 +29,7 @@ class MANN(nn.Module):
 
         # Retrieve input and output dimensions from the training dataset
         train_features, train_labels = next(iter(train_dataloader))
-        input_size = train_features.size()[-1]
+        input_size = 136 #only the first 136 elements correspond to the original training features
         output_size = train_labels.size()[-1]
 
         # Define the two subnetworks composing the MANN architecture
@@ -88,8 +88,7 @@ class MANN(nn.Module):
         # Iterate over batches
         for batch, (X, y) in enumerate(self.train_dataloader):
 
-            # Compute prediction and loss
-            pred = self(X.float()).double()
+            pred = self(X[:,:136].float()).double()
             loss = loss_fn(pred, y)
 
             # Backpropagation
