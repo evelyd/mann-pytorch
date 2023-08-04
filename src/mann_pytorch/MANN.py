@@ -91,6 +91,40 @@ class MANN(nn.Module):
             pred = self(X[:,:136].float()).double()
             loss = loss_fn(pred, y)
 
+            batch_size = len(X)
+
+            # Separate J into Jb and Jsdot batchwise, and reshape them into matrices
+            J_LF_batch = torch.reshape(X[:,137:515], (batch_size, 6, -1))
+            J_RF_batch = torch.reshape(X[:,515:893], (batch_size, 6, -1))
+            J_LF_b_batch = J_LF_batch[:,:,:6]
+            J_LF_sdot_batch = J_LF_batch[:,:,6:]
+            J_RF_b_batch = J_RF_batch[:,:,:6]
+            J_RF_sdot_batch = J_RF_batch[:,:,6:]
+
+            # Isolate other necessary values batchwise
+            gamma_batch = X[:,136]
+            full_sdot_batch = X[:,893:]
+
+            # Get Vb from network output
+            V_b_linear = pred[:,:3]
+            V_b_angular = pred[:,21:24]
+            V_b = torch.cat((V_b_linear, V_b_angular), 1)
+
+            V_b_label_array = []
+
+            # Calculate Vb from data for each elem
+            for i in range(len(gamma_batch)):
+                V_b_label = - gamma_batch[i] * torch.matmul(torch.linalg.inv(J_LF_b_batch[i]),(torch.matmul(J_LF_sdot_batch[i], (full_sdot_batch[i])))) \
+                            - (1 - gamma_batch[i]) * torch.matmul(torch.linalg.inv(J_RF_b_batch[i]),(torch.matmul(J_RF_sdot_batch[i], (full_sdot_batch[i]))))
+                V_b_label_array.append(V_b_label)
+            
+            V_b_label_tensor = torch.stack(V_b_label_array)
+            
+            # Add MSE of Vb and Vbpred
+            print("mse loss: ", loss)
+            loss += loss_fn(V_b_label_tensor, V_b)
+            print("combined loss: ", loss)
+
             # Backpropagation
             optimizer.zero_grad()
             loss.backward()
