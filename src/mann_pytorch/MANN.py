@@ -6,13 +6,15 @@ from torch.utils.data.dataloader import DataLoader
 from mann_pytorch.GatingNetwork import GatingNetwork
 from torch.utils.tensorboard.writer import SummaryWriter
 from mann_pytorch.MotionPredictionNetwork import MotionPredictionNetwork
+from gym_ignition.rbd.idyntree import kindyncomputations
 
 
 class MANN(nn.Module):
     """Class for the Mode-Adaptive Neural Network."""
 
     def __init__(self, train_dataloader: DataLoader, test_dataloader: DataLoader,
-                 num_experts: int, gn_hidden_size: int, mpn_hidden_size: int, dropout_probability: float):
+                 num_experts: int, gn_hidden_size: int, mpn_hidden_size: int, dropout_probability: float,
+                 kindyn: kindyncomputations.KinDynComputations):
         """Mode-Adaptive Neural Network constructor.
 
         Args:
