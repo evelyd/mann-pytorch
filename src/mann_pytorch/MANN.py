@@ -8,6 +8,10 @@ from torch.utils.tensorboard.writer import SummaryWriter
 from mann_pytorch.MotionPredictionNetwork import MotionPredictionNetwork
 from gym_ignition.rbd.idyntree import kindyncomputations
 
+from typing import List
+import numpy as np
+from gym_ignition.rbd.idyntree import numpy
+
 
 class MANN(nn.Module):
     """Class for the Mode-Adaptive Neural Network."""
@@ -49,6 +53,9 @@ class MANN(nn.Module):
         self.train_dataloader = train_dataloader
         self.test_dataloader = test_dataloader
 
+        # Store the kindyn object
+        self.kindyn = kindyn
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Mode-Adaptive Neural Network architecture.
 
@@ -66,6 +73,15 @@ class MANN(nn.Module):
         y = self.mpn(x, blending_coefficients=blending_coefficients)
 
         return y
+    
+    def reset_robot_configuration(self, joint_positions: List, base_position: List, base_quaternion: List) -> None:
+        """Reset the robot configuration."""
+
+        world_H_base = numpy.FromNumPy.to_idyntree_transform(
+            position=np.array(base_position),
+            quaternion=np.array(base_quaternion)).asHomogeneousTransform().toNumPy()
+
+        self.kindyn.set_robot_state(s=joint_positions, ds=np.zeros(len(joint_positions)), world_H_base=world_H_base)
 
     def train_loop(self, loss_fn: _Loss, optimizer: Optimizer, epoch: int, writer: SummaryWriter) -> None:
         """Run one epoch of training.
@@ -95,17 +111,11 @@ class MANN(nn.Module):
 
             batch_size = len(X)
 
-            # Separate J into Jb and Jsdot batchwise, and reshape them into matrices
-            J_LF_batch = torch.reshape(X[:,137:515], (batch_size, 6, -1))
-            J_RF_batch = torch.reshape(X[:,515:893], (batch_size, 6, -1))
-            J_LF_b_batch = J_LF_batch[:,:,:6]
-            J_LF_sdot_batch = J_LF_batch[:,:,6:]
-            J_RF_b_batch = J_RF_batch[:,:,:6]
-            J_RF_sdot_batch = J_RF_batch[:,:,6:]
-
-            # Isolate other necessary values batchwise
-            gamma_batch = X[:,136]
-            full_sdot_batch = X[:,893:]
+            #Get base position and orientation from data for robot state update
+            joint_position_batch = X[:,72:104]
+            joint_velocity_batch = X[:,104:136]
+            base_position_batch = X[:,136:139]
+            base_quaternion_batch = X[:,139:]
 
             # Get Vb from network output
             V_b_linear = pred[:,:3]
@@ -115,9 +125,54 @@ class MANN(nn.Module):
             V_b_label_array = []
 
             # Calculate Vb from data for each elem
-            for i in range(len(gamma_batch)):
-                V_b_label = - gamma_batch[i] * torch.matmul(torch.linalg.inv(J_LF_b_batch[i]),(torch.matmul(J_LF_sdot_batch[i], (full_sdot_batch[i])))) \
-                            - (1 - gamma_batch[i]) * torch.matmul(torch.linalg.inv(J_RF_b_batch[i]),(torch.matmul(J_RF_sdot_batch[i], (full_sdot_batch[i]))))
+            for i in range(batch_size):
+
+                # Compose full joint positions and velocities
+                full_s = np.array(joint_position_batch[i,:12].tolist() \
+                         + [joint_position_batch[i,13].tolist(), joint_position_batch[i,12].tolist(), joint_position_batch[i,14].tolist()] \
+                         + joint_position_batch[i,18:25].tolist() \
+                         + [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] \
+                         + joint_position_batch[i,15:18].tolist() \
+                         + [0] \
+                         + joint_position_batch[i,25:].tolist() \
+                         + [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+
+                full_sdot = np.array(joint_velocity_batch[i,:12].squeeze().tolist() \
+                         + [joint_velocity_batch[i,13].tolist(), joint_velocity_batch[i,12].tolist(), joint_velocity_batch[i,14].tolist()] \
+                         + joint_velocity_batch[i,18:25].squeeze().tolist() \
+                         + [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] \
+                         + joint_velocity_batch[i,15:18].tolist() \
+                         + [0] \
+                         + joint_velocity_batch[i,25:].squeeze().tolist() \
+                         + [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+
+                # Update robot configuration
+                self.reset_robot_configuration(joint_positions=full_s,
+                                           base_position=base_position_batch[i,:],
+                                           base_quaternion=base_quaternion_batch[i,:])
+
+                # Get transforms for feet
+                world_H_base = self.kindyn.get_world_base_transform()
+                base_H_LF = self.kindyn.get_relative_transform(ref_frame_name="root_link", frame_name="l_sole")
+                W_H_LF = world_H_base.dot(base_H_LF)
+                base_H_RF = self.kindyn.get_relative_transform(ref_frame_name="root_link", frame_name="r_sole")
+                W_H_RF = world_H_base.dot(base_H_RF)
+
+                # Check which foot is lower to determine support foot (gamma=1 for LF support, gamma=0 for RF support)
+                if W_H_LF[2,-1] < W_H_RF[2,-1]:
+                    gamma = 1
+                else:
+                    gamma = 0
+
+                # Get foot Jacobians (expressed in base frame)
+                lf_jacobian = self.kindyn.get_frame_jacobian("l_sole")
+
+                rf_jacobian = self.kindyn.get_frame_jacobian("r_sole")
+
+                V_b_label = - gamma * torch.matmul(torch.linalg.inv(torch.from_numpy(lf_jacobian[:,:6])), \
+                                                  (torch.matmul(torch.from_numpy(lf_jacobian[:,6:]), torch.from_numpy(full_sdot)))) \
+                            - (1 - gamma) * torch.matmul(torch.linalg.inv(torch.from_numpy(rf_jacobian[:,:6])), \
+                                                        (torch.matmul(torch.from_numpy(rf_jacobian[:,6:]), torch.from_numpy(full_sdot))))
                 V_b_label_array.append(V_b_label)
             
             V_b_label_tensor = torch.stack(V_b_label_array)
@@ -129,6 +184,7 @@ class MANN(nn.Module):
 
             # Backpropagation
             optimizer.zero_grad()
+            #TODO there is an error here below, maybe need to put the loss in a custom loss function to be able to use this
             loss.backward()
             optimizer.step()
 
