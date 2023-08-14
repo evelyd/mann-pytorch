@@ -56,6 +56,20 @@ class MANN(nn.Module):
         # Store the kindyn object
         self.kindyn = kindyn
 
+    def __getstate__(self):
+        # Copy the object's state from self.__dict__ which contains
+        # all our instance attributes. Always use the dict.copy()
+        # method to avoid modifying the original state.
+        state = self.__dict__.copy()
+        # Remove the unpicklable entries.
+        del state['kindyn']
+        return state
+    
+    def __setstate__(self, state, kindyn: kindyncomputations.KinDynComputations):
+        self.__dict__.update(state)
+        # Add baz back since it doesn't exist in the pickle
+        self.kindyn = kindyn
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Mode-Adaptive Neural Network architecture.
 
@@ -178,13 +192,10 @@ class MANN(nn.Module):
             V_b_label_tensor = torch.stack(V_b_label_array)
             
             # Add MSE of Vb and Vbpred
-            print("mse loss: ", loss)
             loss += loss_fn(V_b_label_tensor, V_b)
-            print("combined loss: ", loss)
 
             # Backpropagation
             optimizer.zero_grad()
-            #TODO there is an error here below, maybe need to put the loss in a custom loss function to be able to use this
             loss.backward()
             optimizer.step()
 
