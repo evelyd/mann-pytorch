@@ -65,10 +65,8 @@ class MANN(nn.Module):
         del state['kindyn']
         return state
     
-    def __setstate__(self, state, kindyn: kindyncomputations.KinDynComputations):
+    def __setstate__(self, state):
         self.__dict__.update(state)
-        # Add baz back since it doesn't exist in the pickle
-        self.kindyn = kindyn
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Mode-Adaptive Neural Network architecture.
