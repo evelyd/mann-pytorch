@@ -139,27 +139,8 @@ class MANN(nn.Module):
             # Calculate Vb from data for each elem
             for i in range(batch_size):
 
-                # Compose full joint positions and velocities
-                full_s = np.array(joint_position_batch[i,:12].tolist() \
-                         + [joint_position_batch[i,13].tolist(), joint_position_batch[i,12].tolist(), joint_position_batch[i,14].tolist()] \
-                         + joint_position_batch[i,18:25].tolist() \
-                         + [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] \
-                         + joint_position_batch[i,15:18].tolist() \
-                         + [0] \
-                         + joint_position_batch[i,25:].tolist() \
-                         + [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
-
-                full_sdot = np.array(joint_velocity_batch[i,:12].squeeze().tolist() \
-                         + [joint_velocity_batch[i,13].tolist(), joint_velocity_batch[i,12].tolist(), joint_velocity_batch[i,14].tolist()] \
-                         + joint_velocity_batch[i,18:25].squeeze().tolist() \
-                         + [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] \
-                         + joint_velocity_batch[i,15:18].tolist() \
-                         + [0] \
-                         + joint_velocity_batch[i,25:].squeeze().tolist() \
-                         + [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
-
                 # Update robot configuration
-                self.reset_robot_configuration(joint_positions=full_s,
+                self.reset_robot_configuration(joint_positions=np.array(joint_position_batch[i,:]),
                                            base_position=base_position_batch[i,:],
                                            base_quaternion=base_quaternion_batch[i,:])
 
@@ -182,9 +163,9 @@ class MANN(nn.Module):
                 rf_jacobian = self.kindyn.get_frame_jacobian("r_sole")
 
                 V_b_label = - gamma * torch.matmul(torch.linalg.inv(torch.from_numpy(lf_jacobian[:,:6])), \
-                                                  (torch.matmul(torch.from_numpy(lf_jacobian[:,6:]), torch.from_numpy(full_sdot)))) \
+                                                  (torch.matmul(torch.from_numpy(lf_jacobian[:,6:]), joint_velocity_batch[i,:]))) \
                             - (1 - gamma) * torch.matmul(torch.linalg.inv(torch.from_numpy(rf_jacobian[:,:6])), \
-                                                        (torch.matmul(torch.from_numpy(rf_jacobian[:,6:]), torch.from_numpy(full_sdot))))
+                                                        (torch.matmul(torch.from_numpy(rf_jacobian[:,6:]), joint_velocity_batch[i,:])))
                 V_b_label_array.append(V_b_label)
             
             V_b_label_tensor = torch.stack(V_b_label_array)
