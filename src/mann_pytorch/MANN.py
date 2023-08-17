@@ -95,32 +95,8 @@ class MANN(nn.Module):
 
         self.kindyn.set_robot_state(s=joint_positions, ds=np.zeros(len(joint_positions)), world_H_base=world_H_base)
 
-    def train_loop(self, loss_fn: _Loss, optimizer: Optimizer, epoch: int, writer: SummaryWriter) -> None:
-        """Run one epoch of training.
-
-        Args:
-            loss_fn (_Loss): The loss function used in the training process
-            optimizer (Optimizer): The optimizer used in the training process
-            epoch (int): The current training epoch
-            writer (SummaryWriter): The updater of the event files to be consumed by TensorBoard
-        """
-
-        # Total number of batches
-        total_batches = int(len(self.train_dataloader))
-
-        # Cumulative loss
-        cumulative_loss = 0
-
-        # Print the learning rate and weight decay of the current epoch
-        print('Current lr:', optimizer.param_groups[0]['lr'])
-        print('Current wd:', optimizer.param_groups[0]['weight_decay'])
-
-        # Iterate over batches
-        for batch, (X, y) in enumerate(self.train_dataloader):
-
-            pred = self(X[:,:136].float()).double()
-            loss = loss_fn(pred, y)
-
+    def get_pi_loss_components(self, X: torch.Tensor, pred: torch.Tensor) -> (torch.Tensor, torch.Tensor):
+            
             batch_size = len(X)
 
             #Get base position and orientation from data for robot state update
@@ -169,9 +145,42 @@ class MANN(nn.Module):
                 V_b_label_array.append(V_b_label)
             
             V_b_label_tensor = torch.stack(V_b_label_array)
-            
+
+            return V_b_label_tensor, V_b
+
+    def train_loop(self, loss_fn: _Loss, optimizer: Optimizer, epoch: int, writer: SummaryWriter) -> None:
+        """Run one epoch of training.
+
+        Args:
+            loss_fn (_Loss): The loss function used in the training process
+            optimizer (Optimizer): The optimizer used in the training process
+            epoch (int): The current training epoch
+            writer (SummaryWriter): The updater of the event files to be consumed by TensorBoard
+        """
+
+        # Total number of batches
+        total_batches = int(len(self.train_dataloader))
+
+        # Cumulative loss
+        cumulative_loss = 0
+        cumulative_mse_loss = 0
+        cumulative_pi_loss = 0
+
+        # Print the learning rate and weight decay of the current epoch
+        print('Current lr:', optimizer.param_groups[0]['lr'])
+        print('Current wd:', optimizer.param_groups[0]['weight_decay'])
+
+        # Iterate over batches
+        for batch, (X, y) in enumerate(self.train_dataloader):
+
+            pred = self(X[:,:136].float()).double()
+            mse_loss = loss_fn(pred, y)
+
             # Add MSE of Vb and Vbpred
-            loss += loss_fn(V_b_label_tensor, V_b)
+            V_b_label_tensor, V_b = self.get_pi_loss_components(X, pred)
+            pi_loss = loss_fn(V_b_label_tensor, V_b)
+            
+            loss = mse_loss + pi_loss
 
             # Backpropagation
             optimizer.zero_grad()
@@ -180,18 +189,30 @@ class MANN(nn.Module):
 
             # Update cumulative loss
             cumulative_loss += loss.item()
+            cumulative_mse_loss += mse_loss.item()
+            cumulative_pi_loss += pi_loss.item()
 
             # Periodically print the current average loss
             if batch % 1000 == 0:
                 current_avg_loss = cumulative_loss/(batch+1)
+                current_avg_mse_loss = cumulative_mse_loss/(batch+1)
+                current_avg_pi_loss = cumulative_pi_loss/(batch+1)
                 print(f"avg loss: {current_avg_loss:>7f}  [{batch:>5d}/{total_batches:>5d}]")
+                print(f"avg MSE loss: {current_avg_mse_loss:>7f}")
+                print(f"avg PI loss: {current_avg_pi_loss:>7f}")
 
         # Print the average loss of the current epoch
         avg_loss = cumulative_loss/total_batches
+        avg_mse_loss = cumulative_mse_loss/total_batches
+        avg_pi_loss = cumulative_pi_loss/total_batches
         print("Final avg loss:", avg_loss)
+        print("Final avg MSE loss:", avg_mse_loss)
+        print("Final avg PI loss:", avg_pi_loss)
 
-        # Store the average loss, learning rate and weight decay of the current epoch
+        # Store the average loss, loss components, learning rate and weight decay of the current epoch
         writer.add_scalar('avg_loss', avg_loss, epoch)
+        writer.add_scalar('avg_mse_loss', avg_mse_loss, epoch)
+        writer.add_scalar('avg_pi_loss', avg_pi_loss, epoch)
         writer.add_scalar('lr', optimizer.param_groups[0]['lr'], epoch)
         writer.add_scalar('wd', optimizer.param_groups[0]['weight_decay'], epoch)
         writer.flush()
@@ -208,17 +229,28 @@ class MANN(nn.Module):
 
         # Cumulative loss
         cumulative_test_loss = 0
+        cumulative_test_mse_loss = 0
+        cumulative_test_pi_loss = 0
 
         with torch.no_grad():
 
             # Iterate over the testing dataset
             for X, y in self.test_dataloader:
                 pred = self(X.float()).double()
-                cumulative_test_loss += loss_fn(pred, y).item()
+                cumulative_test_mse_loss += loss_fn(pred, y).item()
+
+                V_b_label_tensor, V_b = self.get_pi_loss_components(X, pred)
+                cumulative_test_pi_loss += loss_fn(V_b_label_tensor, V_b).item()
+
+                cumulative_test_loss = cumulative_test_mse_loss + cumulative_test_pi_loss
 
         # Print the average test loss at the current epoch
         avg_test_loss = cumulative_test_loss/num_batches
+        avg_test_mse_loss = cumulative_test_mse_loss/num_batches
+        avg_test_pi_loss = cumulative_test_pi_loss/num_batches
         print(f"Avg test loss: {avg_test_loss:>8f} \n")
+        print(f"Avg test MSE loss: {avg_test_mse_loss:>8f} \n")
+        print(f"Avg test PI loss: {avg_test_pi_loss:>8f} \n")
 
     def inference(self, x: torch.Tensor) -> torch.Tensor:
         """Inference step on the given input.
