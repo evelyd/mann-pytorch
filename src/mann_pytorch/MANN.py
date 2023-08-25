@@ -88,9 +88,43 @@ class MANN(nn.Module):
         # Iterate over batches
         for batch, (X, y) in enumerate(self.train_dataloader):
 
+            X_standing_array = []
+            X_walking_array = []
+            y_standing_array = []
+            y_walking_array = []
+
+            batch_size = len(X)
+
+            for i in range(batch_size): #go through each elem in batch
+                #check if the lin vel norm is less than threshold
+                thresh = 0.05
+                if torch.linalg.norm(X[i,19:22]) <= thresh:
+                    #add to standing set
+                    X_standing_array.append(X[i])
+                    y_standing_array.append(y[i])
+                else:
+                    #add to walking set
+                    X_walking_array.append(X[i])
+                    y_walking_array.append(y[i])
+                
             # Compute prediction and loss
-            pred = self(X.float()).double()
-            loss = loss_fn(pred, y)
+            if X_standing_array:
+                X_standing = torch.stack(X_standing_array)
+                y_standing = torch.stack(y_standing_array)
+                pred_standing = self(X_standing.float()).double()
+                loss_standing = loss_fn(pred_standing, y_standing)
+            else:
+                loss_standing = loss_fn(torch.tensor([0.0]), torch.tensor([0.0]))
+
+            if X_walking_array:
+                X_walking = torch.stack(X_walking_array)
+                y_walking = torch.stack(y_walking_array)
+                pred_walking = self(X_walking.float()).double()
+                loss_walking = loss_fn(pred_walking, y_walking)
+            else:
+                loss_walking = loss_fn(torch.tensor([0.0]), torch.tensor([0.0]))
+
+            loss = loss_walking + 20.0 * loss_standing
 
             # Backpropagation
             optimizer.zero_grad()
@@ -132,8 +166,44 @@ class MANN(nn.Module):
 
             # Iterate over the testing dataset
             for X, y in self.test_dataloader:
-                pred = self(X.float()).double()
-                cumulative_test_loss += loss_fn(pred, y).item()
+
+                X_standing_array = []
+                X_walking_array = []
+                y_standing_array = []
+                y_walking_array = []
+
+                batch_size = len(X)
+
+                for i in range(batch_size): #go through each elem in batch
+                    #check if the lin vel norm is less than threshold
+                    thresh = 0.05
+                    if torch.linalg.norm(X[i,19:22]) <= thresh:
+                        #add to standing set
+                        X_standing_array.append(X[i])
+                        y_standing_array.append(y[i])
+                    else:
+                        #add to walking set
+                        X_walking_array.append(X[i])
+                        y_walking_array.append(y[i])
+                    
+                # Compute prediction and loss
+                if X_standing_array:
+                    X_standing = torch.stack(X_standing_array)
+                    y_standing = torch.stack(y_standing_array)
+                    pred_standing = self(X_standing.float()).double()
+                    loss_standing = loss_fn(pred_standing, y_standing)
+                else:
+                    loss_standing = loss_fn(torch.tensor([0.0]), torch.tensor([0.0]))
+
+                if X_walking_array:
+                    X_walking = torch.stack(X_walking_array)
+                    y_walking = torch.stack(y_walking_array)
+                    pred_walking = self(X_walking.float()).double()
+                    loss_walking = loss_fn(pred_walking, y_walking)
+                else:
+                    loss_walking = loss_fn(torch.tensor([0.0]), torch.tensor([0.0]))
+
+                cumulative_test_loss += loss_walking.item() + 20.0 * loss_standing.item()
 
         # Print the average test loss at the current epoch
         avg_test_loss = cumulative_test_loss/num_batches
