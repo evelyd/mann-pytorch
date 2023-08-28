@@ -97,8 +97,9 @@ class MANN(nn.Module):
 
             for i in range(batch_size): #go through each elem in batch
                 #check if the lin vel norm is less than threshold
-                thresh = 0.05
-                if torch.linalg.norm(X[i,19:22]) <= thresh:
+                lower_thresh = 0.01
+                upper_thresh = 0.05 #TODO this is not sufficient by itself, need to try with an average
+                if torch.linalg.norm(X[i,19:22]) >= lower_thresh and torch.linalg.norm(X[i,19:22]) <= upper_thresh:
                     #add to standing set
                     X_standing_array.append(X[i])
                     y_standing_array.append(y[i])
