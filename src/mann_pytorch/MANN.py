@@ -80,6 +80,8 @@ class MANN(nn.Module):
 
         # Cumulative loss
         cumulative_loss = 0
+        cumulative_walking_loss = 0
+        cumulative_standing_loss = 0
 
         # Print the learning rate and weight decay of the current epoch
         print('Current lr:', optimizer.param_groups[0]['lr'])
@@ -115,7 +117,7 @@ class MANN(nn.Module):
                 pred_standing = self(X_standing.float()).double()
                 loss_standing = loss_fn(pred_standing, y_standing)
             else:
-                loss_standing = loss_fn(torch.tensor([0.0]), torch.tensor([0.0]))
+                loss_standing = 20 * loss_fn(torch.tensor([0.0]), torch.tensor([0.0]))
 
             if X_walking_array:
                 X_walking = torch.stack(X_walking_array)
@@ -125,7 +127,7 @@ class MANN(nn.Module):
             else:
                 loss_walking = loss_fn(torch.tensor([0.0]), torch.tensor([0.0]))
 
-            loss = loss_walking + 20.0 * loss_standing
+            loss = loss_walking + loss_standing
 
             # Backpropagation
             optimizer.zero_grad()
@@ -134,6 +136,8 @@ class MANN(nn.Module):
 
             # Update cumulative loss
             cumulative_loss += loss.item()
+            cumulative_walking_loss += loss_walking.item()
+            cumulative_standing_loss += loss_standing.item()
 
             # Periodically print the current average loss
             if batch % 1000 == 0:
@@ -142,10 +146,14 @@ class MANN(nn.Module):
 
         # Print the average loss of the current epoch
         avg_loss = cumulative_loss/total_batches
+        avg_walking_loss = cumulative_walking_loss/total_batches
+        avg_standing_loss = cumulative_standing_loss/total_batches
         print("Final avg loss:", avg_loss)
 
         # Store the average loss, learning rate and weight decay of the current epoch
         writer.add_scalar('avg_loss', avg_loss, epoch)
+        writer.add_scalar('avg_walking_loss', avg_walking_loss, epoch)
+        writer.add_scalar('avg_standing_loss', avg_standing_loss, epoch)
         writer.add_scalar('lr', optimizer.param_groups[0]['lr'], epoch)
         writer.add_scalar('wd', optimizer.param_groups[0]['weight_decay'], epoch)
         writer.flush()
@@ -195,7 +203,7 @@ class MANN(nn.Module):
                     pred_standing = self(X_standing.float()).double()
                     loss_standing = loss_fn(pred_standing, y_standing)
                 else:
-                    loss_standing = loss_fn(torch.tensor([0.0]), torch.tensor([0.0]))
+                    loss_standing = 20.0 * loss_fn(torch.tensor([0.0]), torch.tensor([0.0]))
 
                 if X_walking_array:
                     X_walking = torch.stack(X_walking_array)
@@ -205,7 +213,7 @@ class MANN(nn.Module):
                 else:
                     loss_walking = loss_fn(torch.tensor([0.0]), torch.tensor([0.0]))
 
-                cumulative_test_loss += loss_walking.item() + 20.0 * loss_standing.item()
+                cumulative_test_loss += loss_walking.item() + loss_standing.item()
 
         # Print the average test loss at the current epoch
         avg_test_loss = cumulative_test_loss/num_batches
