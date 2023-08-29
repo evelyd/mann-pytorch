@@ -99,9 +99,9 @@ class MANN(nn.Module):
 
             for i in range(batch_size): #go through each elem in batch
                 #check if the lin vel norm is less than threshold
-                lower_thresh = 0.01
-                upper_thresh = 0.05 #TODO this is not sufficient by itself, need to try with an average
-                if torch.linalg.norm(X[i,19:22]) >= lower_thresh and torch.linalg.norm(X[i,19:22]) <= upper_thresh:
+                lower_thresh = 0.00001
+                upper_thresh = 0.07
+                if torch.linalg.norm(X[i,18:21]) >= lower_thresh and torch.linalg.norm(X[i,18:21]) <= upper_thresh:
                     #add to standing set
                     X_standing_array.append(X[i])
                     y_standing_array.append(y[i])
@@ -109,15 +109,17 @@ class MANN(nn.Module):
                     #add to walking set
                     X_walking_array.append(X[i])
                     y_walking_array.append(y[i])
+
+            standing_weight = 20.0
                 
             # Compute prediction and loss
             if X_standing_array:
                 X_standing = torch.stack(X_standing_array)
                 y_standing = torch.stack(y_standing_array)
                 pred_standing = self(X_standing.float()).double()
-                loss_standing = loss_fn(pred_standing, y_standing)
+                loss_standing = standing_weight * loss_fn(pred_standing, y_standing)
             else:
-                loss_standing = 20 * loss_fn(torch.tensor([0.0]), torch.tensor([0.0]))
+                loss_standing = standing_weight * loss_fn(torch.tensor([0.0]), torch.tensor([0.0]))
 
             if X_walking_array:
                 X_walking = torch.stack(X_walking_array)
@@ -185,9 +187,9 @@ class MANN(nn.Module):
 
                 for i in range(batch_size): #go through each elem in batch
                     #check if the lin vel norm is less than threshold
-                    lower_thresh = 0.01
-                    upper_thresh = 0.05 #TODO this is not sufficient by itself, need to try with an average
-                    if torch.linalg.norm(X[i,19:22]) >= lower_thresh and torch.linalg.norm(X[i,19:22]) <= upper_thresh:
+                    lower_thresh = 0.00001
+                    upper_thresh = 0.07
+                    if torch.linalg.norm(X[i,18:21]) >= lower_thresh and torch.linalg.norm(X[i,18:21]) <= upper_thresh:
                         #add to standing set
                         X_standing_array.append(X[i])
                         y_standing_array.append(y[i])
@@ -195,15 +197,17 @@ class MANN(nn.Module):
                         #add to walking set
                         X_walking_array.append(X[i])
                         y_walking_array.append(y[i])
+
+                standing_weight = 20.0
                     
                 # Compute prediction and loss
                 if X_standing_array:
                     X_standing = torch.stack(X_standing_array)
                     y_standing = torch.stack(y_standing_array)
                     pred_standing = self(X_standing.float()).double()
-                    loss_standing = loss_fn(pred_standing, y_standing)
+                    loss_standing = standing_weight * loss_fn(pred_standing, y_standing)
                 else:
-                    loss_standing = 20.0 * loss_fn(torch.tensor([0.0]), torch.tensor([0.0]))
+                    loss_standing = standing_weight * loss_fn(torch.tensor([0.0]), torch.tensor([0.0]))
 
                 if X_walking_array:
                     X_walking = torch.stack(X_walking_array)
