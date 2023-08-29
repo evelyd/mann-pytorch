@@ -101,7 +101,9 @@ class MANN(nn.Module):
                 #check if the lin vel norm is less than threshold
                 lower_thresh = 0.00001
                 upper_thresh = 0.07
-                if torch.linalg.norm(X[i,18:21]) >= lower_thresh and torch.linalg.norm(X[i,18:21]) <= upper_thresh:
+                avg_norm = torch.mean(torch.linalg.norm(torch.reshape(X[i,:18], (-1,3)), dim=1))
+                print("average norm: ", avg_norm)
+                if avg_norm >= lower_thresh and avg_norm <= upper_thresh:
                     #add to standing set
                     X_standing_array.append(X[i])
                     y_standing_array.append(y[i])
@@ -189,7 +191,8 @@ class MANN(nn.Module):
                     #check if the lin vel norm is less than threshold
                     lower_thresh = 0.00001
                     upper_thresh = 0.07
-                    if torch.linalg.norm(X[i,18:21]) >= lower_thresh and torch.linalg.norm(X[i,18:21]) <= upper_thresh:
+                    avg_norm = torch.mean(torch.linalg.norm(torch.reshape(X[i,:18], (-1,3)), dim=1))
+                    if avg_norm >= lower_thresh and avg_norm <= upper_thresh:
                         #add to standing set
                         X_standing_array.append(X[i])
                         y_standing_array.append(y[i])
