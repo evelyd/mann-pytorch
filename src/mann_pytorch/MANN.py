@@ -99,11 +99,10 @@ class MANN(nn.Module):
 
             for i in range(batch_size): #go through each elem in batch
                 #check if the lin vel norm is less than threshold
-                lower_thresh = 0.00001
-                upper_thresh = 0.07
-                avg_norm = torch.mean(torch.linalg.norm(torch.reshape(X[i,:18], (-1,3)), dim=1))
-                print("average norm: ", avg_norm)
-                if avg_norm >= lower_thresh and avg_norm <= upper_thresh:
+                upper_thresh = 0.1
+                avg_past_vel = torch.mean(torch.reshape(X[i,:18], (-1,3)), 0)
+                avg_norm = torch.linalg.norm(avg_past_vel)
+                if avg_norm <= upper_thresh:
                     #add to standing set
                     X_standing_array.append(X[i])
                     y_standing_array.append(y[i])
@@ -146,13 +145,19 @@ class MANN(nn.Module):
             # Periodically print the current average loss
             if batch % 1000 == 0:
                 current_avg_loss = cumulative_loss/(batch+1)
+                current_avg_walking_loss = cumulative_walking_loss/(batch+1)
+                current_avg_standing_loss = cumulative_standing_loss/(batch+1)
                 print(f"avg loss: {current_avg_loss:>7f}  [{batch:>5d}/{total_batches:>5d}]")
+                print(f"avg walking loss: {current_avg_walking_loss:>7f}  [{batch:>5d}/{total_batches:>5d}]")
+                print(f"avg standing loss: {current_avg_standing_loss:>7f}  [{batch:>5d}/{total_batches:>5d}]")
 
         # Print the average loss of the current epoch
         avg_loss = cumulative_loss/total_batches
         avg_walking_loss = cumulative_walking_loss/total_batches
         avg_standing_loss = cumulative_standing_loss/total_batches
         print("Final avg loss:", avg_loss)
+        print("Final avg walking loss:", avg_walking_loss)
+        print("Final avg standing loss:", avg_standing_loss)
 
         # Store the average loss, learning rate and weight decay of the current epoch
         writer.add_scalar('avg_loss', avg_loss, epoch)
@@ -189,10 +194,10 @@ class MANN(nn.Module):
 
                 for i in range(batch_size): #go through each elem in batch
                     #check if the lin vel norm is less than threshold
-                    lower_thresh = 0.00001
-                    upper_thresh = 0.07
-                    avg_norm = torch.mean(torch.linalg.norm(torch.reshape(X[i,:18], (-1,3)), dim=1))
-                    if avg_norm >= lower_thresh and avg_norm <= upper_thresh:
+                    upper_thresh = 0.1
+                    avg_past_vel = torch.mean(torch.reshape(X[i,:18], (-1,3)), 0)
+                    avg_norm = torch.linalg.norm(avg_past_vel)
+                    if avg_norm <= upper_thresh:
                         #add to standing set
                         X_standing_array.append(X[i])
                         y_standing_array.append(y[i])
