@@ -178,7 +178,7 @@ class MANN(nn.Module):
 
             # Add MSE of Vb and Vbpred
             V_b_label_tensor, V_b = self.get_pi_loss_components(X, pred)
-            pi_loss = loss_fn(V_b_label_tensor, V_b)
+            pi_loss = 10.0 * loss_fn(V_b_label_tensor, V_b)
             
             loss = mse_loss + pi_loss
 
@@ -240,7 +240,7 @@ class MANN(nn.Module):
                 cumulative_test_mse_loss += loss_fn(pred, y).item()
 
                 V_b_label_tensor, V_b = self.get_pi_loss_components(X, pred)
-                cumulative_test_pi_loss += loss_fn(V_b_label_tensor, V_b).item()
+                cumulative_test_pi_loss += 10.0 * loss_fn(V_b_label_tensor, V_b).item()
 
                 cumulative_test_loss = cumulative_test_mse_loss + cumulative_test_pi_loss
 
