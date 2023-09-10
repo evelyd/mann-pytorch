@@ -99,10 +99,11 @@ class MANN(nn.Module):
 
             for i in range(batch_size): #go through each elem in batch
                 #check if the lin vel norm is less than threshold
-                upper_thresh = 0.1
-                avg_past_vel = torch.mean(torch.reshape(X[i,:18], (-1,3)), 0)
-                avg_norm = torch.linalg.norm(avg_past_vel)
-                if avg_norm <= upper_thresh:
+                upper_thresh = 0.05
+                # avg_past_vel = torch.mean(torch.reshape(X[i,:18], (-1,3)), 0)
+                moving_avg_norm = torch.linalg.norm(X[i,15:18])
+                # print(moving_avg_norm)
+                if moving_avg_norm <= upper_thresh:
                     #add to standing set
                     X_standing_array.append(X[i])
                     y_standing_array.append(y[i])
@@ -111,7 +112,7 @@ class MANN(nn.Module):
                     X_walking_array.append(X[i])
                     y_walking_array.append(y[i])
 
-            standing_weight = 20.0
+            standing_weight = 100.0
                 
             # Compute prediction and loss
             if X_standing_array:
@@ -194,10 +195,10 @@ class MANN(nn.Module):
 
                 for i in range(batch_size): #go through each elem in batch
                     #check if the lin vel norm is less than threshold
-                    upper_thresh = 0.1
-                    avg_past_vel = torch.mean(torch.reshape(X[i,:18], (-1,3)), 0)
-                    avg_norm = torch.linalg.norm(avg_past_vel)
-                    if avg_norm <= upper_thresh:
+                    upper_thresh = 0.05
+                    # avg_past_vel = torch.mean(torch.reshape(X[i,:18], (-1,3)), 0)
+                    moving_avg_norm = torch.linalg.norm(X[i,15:18])
+                    if moving_avg_norm <= upper_thresh:
                         #add to standing set
                         X_standing_array.append(X[i])
                         y_standing_array.append(y[i])
@@ -206,7 +207,7 @@ class MANN(nn.Module):
                         X_walking_array.append(X[i])
                         y_walking_array.append(y[i])
 
-                standing_weight = 20.0
+                standing_weight = 100.0
                     
                 # Compute prediction and loss
                 if X_standing_array:
