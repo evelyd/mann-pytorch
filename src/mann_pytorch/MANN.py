@@ -1,3 +1,8 @@
+import os
+from typing import List, Dict
+import json
+import numpy as np
+
 import torch
 from torch import nn
 from torch.optim import Optimizer
@@ -7,12 +12,17 @@ from mann_pytorch.GatingNetwork import GatingNetwork
 from torch.utils.tensorboard.writer import SummaryWriter
 from mann_pytorch.MotionPredictionNetwork import MotionPredictionNetwork
 
+# import matplotlib as mpl
+# mpl.rcParams['toolbar'] = 'None'
+# import matplotlib.pyplot as plt
+
 
 class MANN(nn.Module):
     """Class for the Mode-Adaptive Neural Network."""
 
     def __init__(self, train_dataloader: DataLoader, test_dataloader: DataLoader,
-                 num_experts: int, gn_hidden_size: int, mpn_hidden_size: int, dropout_probability: float):
+                 num_experts: int, gn_hidden_size: int, mpn_hidden_size: int, dropout_probability: float,
+                 savepath: str):
         """Mode-Adaptive Neural Network constructor.
 
         Args:
@@ -47,6 +57,11 @@ class MANN(nn.Module):
         self.train_dataloader = train_dataloader
         self.test_dataloader = test_dataloader
 
+        self.savepath = savepath
+
+        self.thresh = 0.05
+        self.standing_weight = 10.0
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Mode-Adaptive Neural Network architecture.
 
@@ -64,6 +79,36 @@ class MANN(nn.Module):
         y = self.mpn(x, blending_coefficients=blending_coefficients)
 
         return y
+    
+    def read_from_file(self, filename: str) -> np.array:
+        """Read data as json from file."""
+
+        with open(filename, 'r') as openfile:
+            data = json.load(openfile)
+
+        return np.array(data)
+
+    def load_input_mean_and_std(self, datapath: str) -> (List, List):
+        """Compute output mean and standard deviation."""
+
+        # Full-output mean and std
+        Xmean = self.read_from_file(datapath + 'X_mean.txt')
+        Xstd = self.read_from_file(datapath + 'X_std.txt')
+
+        # Remove zeroes from Ystd
+        for i in range(Xstd.size):
+            if Xstd[i] == 0:
+                Xstd[i] = 1
+
+        return Xmean, Xstd
+    
+    def denormalize(self, X: np.array, Xmean: np.array, Xstd: np.array) -> np.array:
+        """Denormalize X, given its mean and std."""
+
+        # Denormalize
+        X = X * Xstd + Xmean
+
+        return X
 
     def train_loop(self, loss_fn: _Loss, optimizer: Optimizer, epoch: int, writer: SummaryWriter) -> None:
         """Run one epoch of training.
@@ -87,8 +132,16 @@ class MANN(nn.Module):
         print('Current lr:', optimizer.param_groups[0]['lr'])
         print('Current wd:', optimizer.param_groups[0]['weight_decay'])
 
+        # vel_norms = []
+        # vels = []
+
+        datapath = os.path.join(self.savepath, "normalization/")
+        Xmean, Xstd = self.load_input_mean_and_std(datapath)
+
         # Iterate over batches
         for batch, (X, y) in enumerate(self.train_dataloader):
+
+            X_denorm = self.denormalize(np.asarray(X), Xmean, Xstd)
 
             X_standing_array = []
             X_walking_array = []
@@ -99,11 +152,11 @@ class MANN(nn.Module):
 
             for i in range(batch_size): #go through each elem in batch
                 #check if the lin vel norm is less than threshold
-                upper_thresh = 0.05
-                # avg_past_vel = torch.mean(torch.reshape(X[i,:18], (-1,3)), 0)
-                moving_avg_norm = torch.linalg.norm(X[i,15:18])
-                # print(moving_avg_norm)
-                if moving_avg_norm <= upper_thresh:
+
+                # vels.append(X_denorm[i,15:18].tolist())
+                # vel_norms.append(np.linalg.norm(X_denorm[i,15:18]))
+
+                if np.linalg.norm(X_denorm[i,15:18]) <= self.thresh:
                     #add to standing set
                     X_standing_array.append(X[i])
                     y_standing_array.append(y[i])
@@ -111,17 +164,15 @@ class MANN(nn.Module):
                     #add to walking set
                     X_walking_array.append(X[i])
                     y_walking_array.append(y[i])
-
-            standing_weight = 100.0
                 
             # Compute prediction and loss
             if X_standing_array:
                 X_standing = torch.stack(X_standing_array)
                 y_standing = torch.stack(y_standing_array)
                 pred_standing = self(X_standing.float()).double()
-                loss_standing = standing_weight * loss_fn(pred_standing, y_standing)
+                loss_standing = self.standing_weight * loss_fn(pred_standing, y_standing)
             else:
-                loss_standing = standing_weight * loss_fn(torch.tensor([0.0]), torch.tensor([0.0]))
+                loss_standing = self.standing_weight * loss_fn(torch.tensor([0.0]), torch.tensor([0.0]))
 
             if X_walking_array:
                 X_walking = torch.stack(X_walking_array)
@@ -151,6 +202,15 @@ class MANN(nn.Module):
                 print(f"avg loss: {current_avg_loss:>7f}  [{batch:>5d}/{total_batches:>5d}]")
                 print(f"avg walking loss: {current_avg_walking_loss:>7f}  [{batch:>5d}/{total_batches:>5d}]")
                 print(f"avg standing loss: {current_avg_standing_loss:>7f}  [{batch:>5d}/{total_batches:>5d}]")
+
+        # plt.figure(4)
+        # plt.plot(vel_norms)
+        # plt.title("Base velocity norms during training")
+        # plt.xlabel("Timestep")
+        # plt.ylabel("Velocity (m/s)")
+        # plt.ylim([0, 0.2])
+
+        # plt.show()
 
         # Print the average loss of the current epoch
         avg_loss = cumulative_loss/total_batches
@@ -183,8 +243,13 @@ class MANN(nn.Module):
 
         with torch.no_grad():
 
+            datapath = os.path.join(self.savepath, "normalization/")
+            Xmean, Xstd = self.load_input_mean_and_std(datapath)
+
             # Iterate over the testing dataset
             for X, y in self.test_dataloader:
+
+                X_denorm = self.denormalize(np.asarray(X), Xmean, Xstd)
 
                 X_standing_array = []
                 X_walking_array = []
@@ -195,10 +260,7 @@ class MANN(nn.Module):
 
                 for i in range(batch_size): #go through each elem in batch
                     #check if the lin vel norm is less than threshold
-                    upper_thresh = 0.05
-                    # avg_past_vel = torch.mean(torch.reshape(X[i,:18], (-1,3)), 0)
-                    moving_avg_norm = torch.linalg.norm(X[i,15:18])
-                    if moving_avg_norm <= upper_thresh:
+                    if np.linalg.norm(X_denorm[i,15:18]) <= self.thresh:
                         #add to standing set
                         X_standing_array.append(X[i])
                         y_standing_array.append(y[i])
@@ -206,17 +268,15 @@ class MANN(nn.Module):
                         #add to walking set
                         X_walking_array.append(X[i])
                         y_walking_array.append(y[i])
-
-                standing_weight = 100.0
                     
                 # Compute prediction and loss
                 if X_standing_array:
                     X_standing = torch.stack(X_standing_array)
                     y_standing = torch.stack(y_standing_array)
                     pred_standing = self(X_standing.float()).double()
-                    loss_standing = standing_weight * loss_fn(pred_standing, y_standing)
+                    loss_standing = self.standing_weight * loss_fn(pred_standing, y_standing)
                 else:
-                    loss_standing = standing_weight * loss_fn(torch.tensor([0.0]), torch.tensor([0.0]))
+                    loss_standing = self.standing_weight * loss_fn(torch.tensor([0.0]), torch.tensor([0.0]))
 
                 if X_walking_array:
                     X_walking = torch.stack(X_walking_array)
