@@ -1,3 +1,8 @@
+import os
+from typing import List, Dict
+import json
+import numpy as np
+
 import torch
 from torch import nn
 from torch.optim import Optimizer
@@ -12,12 +17,17 @@ from typing import List
 import numpy as np
 from gym_ignition.rbd.idyntree import numpy
 
+# import matplotlib as mpl
+# mpl.rcParams['toolbar'] = 'None'
+# import matplotlib.pyplot as plt
+
 
 class MANN(nn.Module):
     """Class for the Mode-Adaptive Neural Network."""
 
     def __init__(self, train_dataloader: DataLoader, test_dataloader: DataLoader,
                  num_experts: int, gn_hidden_size: int, mpn_hidden_size: int, dropout_probability: float,
+                 savepath: str,
                  kindyn: kindyncomputations.KinDynComputations):
         """Mode-Adaptive Neural Network constructor.
 
@@ -53,6 +63,11 @@ class MANN(nn.Module):
         self.train_dataloader = train_dataloader
         self.test_dataloader = test_dataloader
 
+        self.savepath = savepath
+
+        self.thresh = 0.05
+        self.standing_weight = 10.0
+
         # Store the kindyn object
         self.kindyn = kindyn
 
@@ -85,7 +100,37 @@ class MANN(nn.Module):
         y = self.mpn(x, blending_coefficients=blending_coefficients)
 
         return y
+        
+    def read_from_file(self, filename: str) -> np.array:
+        """Read data as json from file."""
+
+        with open(filename, 'r') as openfile:
+            data = json.load(openfile)
+
+        return np.array(data)
+
+    def load_input_mean_and_std(self, datapath: str) -> (List, List):
+        """Compute output mean and standard deviation."""
+
+        # Full-output mean and std
+        Xmean = self.read_from_file(datapath + 'X_mean.txt')
+        Xstd = self.read_from_file(datapath + 'X_std.txt')
+
+        # Remove zeroes from Ystd
+        for i in range(Xstd.size):
+            if Xstd[i] == 0:
+                Xstd[i] = 1
+
+        return Xmean, Xstd
     
+    def denormalize(self, X: np.array, Xmean: np.array, Xstd: np.array) -> np.array:
+        """Denormalize X, given its mean and std."""
+
+        # Denormalize
+        X = X * Xstd + Xmean
+
+        return X
+
     def reset_robot_configuration(self, joint_positions: List, base_position: List, base_quaternion: List) -> None:
         """Reset the robot configuration."""
 
@@ -170,8 +215,16 @@ class MANN(nn.Module):
         print('Current lr:', optimizer.param_groups[0]['lr'])
         print('Current wd:', optimizer.param_groups[0]['weight_decay'])
 
+        # vel_norms = []
+        # vels = []
+
+        datapath = os.path.join(self.savepath, "normalization/")
+        Xmean, Xstd = self.load_input_mean_and_std(datapath)
+
         # Iterate over batches
         for batch, (X, y) in enumerate(self.train_dataloader):
+
+            X_denorm = self.denormalize(np.asarray(X), Xmean, Xstd)
 
             pred = self(X[:,:136].float()).double()
             mse_loss = loss_fn(pred, y)
@@ -200,6 +253,15 @@ class MANN(nn.Module):
                 print(f"avg loss: {current_avg_loss:>7f}  [{batch:>5d}/{total_batches:>5d}]")
                 print(f"avg MSE loss: {current_avg_mse_loss:>7f}")
                 print(f"avg PI loss: {current_avg_pi_loss:>7f}")
+
+        # plt.figure(4)
+        # plt.plot(vel_norms)
+        # plt.title("Base velocity norms during training")
+        # plt.xlabel("Timestep")
+        # plt.ylabel("Velocity (m/s)")
+        # plt.ylim([0, 0.2])
+
+        # plt.show()
 
         # Print the average loss of the current epoch
         avg_loss = cumulative_loss/total_batches
@@ -234,8 +296,13 @@ class MANN(nn.Module):
 
         with torch.no_grad():
 
+            datapath = os.path.join(self.savepath, "normalization/")
+            Xmean, Xstd = self.load_input_mean_and_std(datapath)
+
             # Iterate over the testing dataset
             for X, y in self.test_dataloader:
+                X_denorm = self.denormalize(np.asarray(X), Xmean, Xstd)
+                
                 pred = self(X.float()).double()
                 cumulative_test_mse_loss += loss_fn(pred, y).item()
 
