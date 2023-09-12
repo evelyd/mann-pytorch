@@ -17,10 +17,6 @@ from typing import List
 import numpy as np
 from gym_ignition.rbd.idyntree import numpy
 
-# import matplotlib as mpl
-# mpl.rcParams['toolbar'] = 'None'
-# import matplotlib.pyplot as plt
-
 
 class MANN(nn.Module):
     """Class for the Mode-Adaptive Neural Network."""
@@ -65,11 +61,10 @@ class MANN(nn.Module):
 
         self.savepath = savepath
 
-        self.thresh = 0.05
-        self.standing_weight = 10.0
-
         # Store the kindyn object
         self.kindyn = kindyn
+
+        self.pi_weight = 10.0
 
     def __getstate__(self):
         # Copy the object's state from self.__dict__ which contains
@@ -110,18 +105,32 @@ class MANN(nn.Module):
         return np.array(data)
 
     def load_input_mean_and_std(self, datapath: str) -> (List, List):
-        """Compute output mean and standard deviation."""
+        """Compute input mean and standard deviation."""
 
-        # Full-output mean and std
+        # Full-input mean and std
         Xmean = self.read_from_file(datapath + 'X_mean.txt')
         Xstd = self.read_from_file(datapath + 'X_std.txt')
 
-        # Remove zeroes from Ystd
+        # Remove zeroes from Xstd
         for i in range(Xstd.size):
             if Xstd[i] == 0:
                 Xstd[i] = 1
 
         return Xmean, Xstd
+    
+    def load_output_mean_and_std(self, datapath: str) -> (List, List):
+        """Compute output mean and standard deviation."""
+
+        # Full-output mean and std
+        Ymean = self.read_from_file(datapath + 'Y_mean.txt')
+        Ystd = self.read_from_file(datapath + 'Y_std.txt')
+
+        # Remove zeroes from Ystd
+        for i in range(Ystd.size):
+            if Ystd[i] == 0:
+                Ystd[i] = 1
+
+        return Ymean, Ystd
     
     def denormalize(self, X: np.array, Xmean: np.array, Xstd: np.array) -> np.array:
         """Denormalize X, given its mean and std."""
@@ -143,6 +152,14 @@ class MANN(nn.Module):
     def get_pi_loss_components(self, X: torch.Tensor, pred: torch.Tensor) -> (torch.Tensor, torch.Tensor):
             
             batch_size = len(X)
+
+            datapath = os.path.join(self.savepath, "normalization/")
+            Xmean, Xstd = self.load_input_mean_and_std(datapath)
+            Ymean, Ystd = self.load_output_mean_and_std(datapath)
+
+            # Denormalize for correct calculations
+            X = torch.from_numpy(self.denormalize(np.asarray(X), Xmean, Xstd))
+            pred = torch.from_numpy(self.denormalize(pred.detach().cpu().numpy(), Ymean, Ystd))
 
             #Get base position and orientation from data for robot state update
             joint_position_batch = X[:,72:104]
@@ -216,22 +233,16 @@ class MANN(nn.Module):
         print('Current wd:', optimizer.param_groups[0]['weight_decay'])
 
         # vel_norms = []
-        # vels = []
-
-        datapath = os.path.join(self.savepath, "normalization/")
-        Xmean, Xstd = self.load_input_mean_and_std(datapath)
 
         # Iterate over batches
         for batch, (X, y) in enumerate(self.train_dataloader):
-
-            X_denorm = self.denormalize(np.asarray(X), Xmean, Xstd)
 
             pred = self(X[:,:136].float()).double()
             mse_loss = loss_fn(pred, y)
 
             # Add MSE of Vb and Vbpred
             V_b_label_tensor, V_b = self.get_pi_loss_components(X, pred)
-            pi_loss = 10.0 * loss_fn(V_b_label_tensor, V_b)
+            pi_loss = self.pi_weight * loss_fn(V_b_label_tensor, V_b)
             
             loss = mse_loss + pi_loss
 
@@ -253,15 +264,6 @@ class MANN(nn.Module):
                 print(f"avg loss: {current_avg_loss:>7f}  [{batch:>5d}/{total_batches:>5d}]")
                 print(f"avg MSE loss: {current_avg_mse_loss:>7f}")
                 print(f"avg PI loss: {current_avg_pi_loss:>7f}")
-
-        # plt.figure(4)
-        # plt.plot(vel_norms)
-        # plt.title("Base velocity norms during training")
-        # plt.xlabel("Timestep")
-        # plt.ylabel("Velocity (m/s)")
-        # plt.ylim([0, 0.2])
-
-        # plt.show()
 
         # Print the average loss of the current epoch
         avg_loss = cumulative_loss/total_batches
@@ -296,18 +298,14 @@ class MANN(nn.Module):
 
         with torch.no_grad():
 
-            datapath = os.path.join(self.savepath, "normalization/")
-            Xmean, Xstd = self.load_input_mean_and_std(datapath)
-
             # Iterate over the testing dataset
             for X, y in self.test_dataloader:
-                X_denorm = self.denormalize(np.asarray(X), Xmean, Xstd)
                 
                 pred = self(X.float()).double()
                 cumulative_test_mse_loss += loss_fn(pred, y).item()
 
                 V_b_label_tensor, V_b = self.get_pi_loss_components(X, pred)
-                cumulative_test_pi_loss += 10.0 * loss_fn(V_b_label_tensor, V_b).item()
+                cumulative_test_pi_loss += self.pi_weight * loss_fn(V_b_label_tensor, V_b).item()
 
                 cumulative_test_loss = cumulative_test_mse_loss + cumulative_test_pi_loss
 
