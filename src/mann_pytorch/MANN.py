@@ -189,20 +189,27 @@ class MANN(nn.Module):
                 base_H_RF = self.kindyn.get_relative_transform(ref_frame_name="root_link", frame_name="r_sole")
                 W_H_RF = world_H_base.dot(base_H_RF)
 
+                gamma_LF = 0
+                gamma_RF = 0
+
                 # Check which foot is lower to determine support foot (gamma=1 for LF support, gamma=0 for RF support)
-                if W_H_LF[2,-1] < W_H_RF[2,-1]:
-                    gamma = 1
-                else:
-                    gamma = 0
+                if W_H_LF[2,-1] < W_H_RF[2,-1]: # LF is support foot
+                    gamma_LF = 1
+                    if abs(W_H_LF[2,-1] - W_H_RF[2,-1]) < 0.01: #RF is within 1 cm of LF height
+                        gamma_RF = 1
+                else: # RF is support foot
+                    gamma_RF = 1
+                    if abs(W_H_LF[2,-1] - W_H_RF[2,-1]) < 0.01: #LF is within 1 cm of RF height
+                        gamma_LF = 1
 
                 # Get foot Jacobians (expressed in base frame)
                 lf_jacobian = self.kindyn.get_frame_jacobian("l_sole")
 
                 rf_jacobian = self.kindyn.get_frame_jacobian("r_sole")
 
-                V_b_label = - gamma * torch.matmul(torch.linalg.inv(torch.from_numpy(lf_jacobian[:,:6])), \
+                V_b_label = - gamma_LF * torch.matmul(torch.linalg.inv(torch.from_numpy(lf_jacobian[:,:6])), \
                                                   (torch.matmul(torch.from_numpy(lf_jacobian[:,6:]), joint_velocity_batch[i,:]))) \
-                            - (1 - gamma) * torch.matmul(torch.linalg.inv(torch.from_numpy(rf_jacobian[:,:6])), \
+                            - gamma_RF * torch.matmul(torch.linalg.inv(torch.from_numpy(rf_jacobian[:,:6])), \
                                                         (torch.matmul(torch.from_numpy(rf_jacobian[:,6:]), joint_velocity_batch[i,:])))
                 V_b_label_array.append(V_b_label)
             
