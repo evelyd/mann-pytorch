@@ -116,6 +116,9 @@ class MANN(nn.Module):
             if Xstd[i] == 0:
                 Xstd[i] = 1
 
+        Xmean = torch.from_numpy(Xmean)
+        Xstd = torch.from_numpy(Xstd)
+
         return Xmean, Xstd
     
     def load_output_mean_and_std(self, datapath: str) -> (List, List):
@@ -130,9 +133,12 @@ class MANN(nn.Module):
             if Ystd[i] == 0:
                 Ystd[i] = 1
 
+        Ymean = torch.from_numpy(Ymean)
+        Ystd = torch.from_numpy(Ystd)
+
         return Ymean, Ystd
     
-    def denormalize(self, X: np.array, Xmean: np.array, Xstd: np.array) -> np.array:
+    def denormalize(self, X: torch.Tensor, Xmean: torch.Tensor, Xstd: torch.Tensor) -> torch.Tensor:
         """Denormalize X, given its mean and std."""
 
         # Denormalize
@@ -158,8 +164,8 @@ class MANN(nn.Module):
             Ymean, Ystd = self.load_output_mean_and_std(datapath)
 
             # Denormalize for correct calculations
-            X = torch.from_numpy(self.denormalize(np.asarray(X), Xmean, Xstd))
-            pred = torch.from_numpy(self.denormalize(pred.detach().cpu().numpy(), Ymean, Ystd))
+            X = self.denormalize(X, Xmean, Xstd)
+            pred = self.denormalize(pred, Ymean, Ystd)
 
             #Get base position and orientation from data for robot state update
             joint_position_batch = X[:,72:104]
