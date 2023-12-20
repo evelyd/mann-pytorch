@@ -19,6 +19,10 @@ def convert_model(model_path: Path, onnx_model_path: Path, normalization_folder:
     X_std = read_from_file(str(normalization_folder / "X_std.txt"))
     X_std[np.where(X_std <= 1e-4)] = 1
 
+    # Clip inputs to exclude the stuff only used for loss function calculations
+    X_mean = X_mean[:input_size]
+    X_std = X_std[:input_size]
+
     Y_mean = read_from_file(str(normalization_folder / "Y_mean.txt"))
     Y_std = read_from_file(str(normalization_folder / "Y_std.txt"))
     Y_std[np.where(Y_std <= 1e-4)] = 1
