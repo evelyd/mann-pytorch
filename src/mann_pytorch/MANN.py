@@ -41,7 +41,7 @@ class MANN(nn.Module):
 
         # Retrieve input and output dimensions from the training dataset
         train_features, train_labels = next(iter(train_dataloader))
-        input_size = 136 #only the first 136 elements correspond to the original training features
+        input_size = 124 # cut off the features only used for the loss function calculations
         output_size = train_labels.size()[-1]
 
         # Define the two subnetworks composing the MANN architecture
@@ -74,7 +74,7 @@ class MANN(nn.Module):
         # Remove the unpicklable entries.
         del state['kindyn']
         return state
-    
+
     def __setstate__(self, state):
         self.__dict__.update(state)
 
@@ -95,7 +95,7 @@ class MANN(nn.Module):
         y = self.mpn(x, blending_coefficients=blending_coefficients)
 
         return y
-        
+
     def read_from_file(self, filename: str) -> np.array:
         """Read data as json from file."""
 
@@ -120,7 +120,7 @@ class MANN(nn.Module):
         Xstd = torch.from_numpy(Xstd)
 
         return Xmean, Xstd
-    
+
     def load_output_mean_and_std(self, datapath: str) -> (List, List):
         """Compute output mean and standard deviation."""
 
@@ -137,7 +137,7 @@ class MANN(nn.Module):
         Ystd = torch.from_numpy(Ystd)
 
         return Ymean, Ystd
-    
+
     def denormalize(self, X: torch.Tensor, Xmean: torch.Tensor, Xstd: torch.Tensor) -> torch.Tensor:
         """Denormalize X, given its mean and std."""
 
@@ -156,7 +156,7 @@ class MANN(nn.Module):
         self.kindyn.set_robot_state(s=joint_positions, ds=np.zeros(len(joint_positions)), world_H_base=world_H_base)
 
     def get_pi_loss_components(self, X: torch.Tensor, pred: torch.Tensor) -> (torch.Tensor, torch.Tensor):
-            
+
             batch_size = len(X)
 
             datapath = os.path.join(self.savepath, "normalization/")
@@ -168,10 +168,10 @@ class MANN(nn.Module):
             pred = self.denormalize(pred, Ymean, Ystd)
 
             #Get base position and orientation from data for robot state update
-            joint_position_batch = X[:,72:104]
-            joint_velocity_batch = X[:,104:136]
-            base_position_batch = X[:,136:139]
-            base_quaternion_batch = X[:,139:]
+            joint_position_batch = X[:,72:98]
+            joint_velocity_batch = X[:,98:124]
+            base_position_batch = X[:,124:127]
+            base_quaternion_batch = X[:,127:]
 
             # Get Vb from network output
             V_b_linear = pred[:,:3]
@@ -211,7 +211,7 @@ class MANN(nn.Module):
                             - (1 - gamma) * torch.matmul(torch.linalg.inv(torch.from_numpy(rf_jacobian[:,:6])), \
                                                         (torch.matmul(torch.from_numpy(rf_jacobian[:,6:]), joint_velocity_batch[i,:])))
                 V_b_label_array.append(V_b_label)
-            
+
             V_b_label_tensor = torch.stack(V_b_label_array)
 
             return V_b_label_tensor, V_b
@@ -243,13 +243,13 @@ class MANN(nn.Module):
         # Iterate over batches
         for batch, (X, y) in enumerate(self.train_dataloader):
 
-            pred = self(X[:,:136].float()).double()
+            pred = self(X[:,:124].float()).double()
             mse_loss = loss_fn(pred, y)
 
             # Add MSE of Vb and Vbpred
             V_b_label_tensor, V_b = self.get_pi_loss_components(X, pred)
             pi_loss = self.pi_weight * loss_fn(V_b_label_tensor, V_b)
-            
+
             loss = mse_loss + pi_loss
 
             # Backpropagation
@@ -306,8 +306,8 @@ class MANN(nn.Module):
 
             # Iterate over the testing dataset
             for X, y in self.test_dataloader:
-                
-                pred = self(X.float()).double()
+
+                pred = self(X[:,:124].float()).double()
                 cumulative_test_mse_loss += loss_fn(pred, y).item()
 
                 V_b_label_tensor, V_b = self.get_pi_loss_components(X, pred)
