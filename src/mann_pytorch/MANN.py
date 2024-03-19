@@ -287,7 +287,7 @@ class MANN(nn.Module):
         writer.add_scalar('wd', optimizer.param_groups[0]['weight_decay'], epoch)
         writer.flush()
 
-    def test_loop(self, loss_fn: _Loss) -> None:
+    def test_loop(self, loss_fn: _Loss, epoch: int, writer: SummaryWriter) -> None:
         """Test the trained model on the test data.
 
         Args:
@@ -322,6 +322,12 @@ class MANN(nn.Module):
         print(f"Avg test loss: {avg_test_loss:>8f} \n")
         print(f"Avg test MSE loss: {avg_test_mse_loss:>8f} \n")
         print(f"Avg test PI loss: {avg_test_pi_loss:>8f} \n")
+
+        # Store the average loss, loss components, learning rate and weight decay of the current epoch
+        writer.add_scalar('avg_test_loss', avg_test_loss, epoch)
+        writer.add_scalar('avg_test_mse_loss', avg_test_mse_loss, epoch)
+        writer.add_scalar('avg_test_pi_loss', avg_test_pi_loss, epoch)
+        writer.flush()
 
     def inference(self, x: torch.Tensor) -> torch.Tensor:
         """Inference step on the given input.
