@@ -168,14 +168,16 @@ class MANN(nn.Module):
             pred = self.denormalize(pred, Ymean, Ystd)
 
             #Get base position and orientation from data for robot state update
-            joint_position_batch = X[:,72:98]
-            joint_velocity_batch = X[:,98:124]
-            base_position_batch = X[:,124:127]
+            # joint_position_batch = X[:,72:98]#this is the previous timestep, current one should be in the label
+            # joint_velocity_batch = X[:,98:124] #this is the previous timestep, current one should be in the label
+            base_position_batch = X[:,124:127] #with test_pi_improvements element code, should now be the correct timestep (current)
             base_quaternion_batch = X[:,127:]
 
             # Get Vb from network output
             V_b_linear = pred[:,:3]
             V_b_angular = pred[:,21:24]
+            joint_position_batch = pred[:, -52:-26]
+            joint_velocity_batch = pred[:,-26:]
             V_b = torch.cat((V_b_linear, V_b_angular), 1)
 
             V_b_label_array = []
@@ -184,7 +186,7 @@ class MANN(nn.Module):
             for i in range(batch_size):
 
                 # Update robot configuration
-                self.reset_robot_configuration(joint_positions=np.array(joint_position_batch[i,:]),
+                self.reset_robot_configuration(joint_positions=joint_position_batch[i,:].detach().numpy(),
                                            base_position=base_position_batch[i,:],
                                            base_quaternion=base_quaternion_batch[i,:])
 
