@@ -178,6 +178,25 @@ class MANN(nn.Module):
 
         return rpy
 
+    def compute_Vb_label(self, base_position: torch.Tensor, base_quaternion: torch.Tensor, joint_position: torch.Tensor, V_b: torch.Tensor,
+                         joint_velocity: torch.Tensor) -> torch.Tensor:
+
+        # Get a base transform matrix from the data (not prediction) base position and quaternion
+        H_b = SpatialMath().H_from_Pos_RPY(base_position, self.quaternion_to_rpy(base_quaternion)).array
+        full_jacobian_LF = self.kinDyn.jacobian("l_sole", H_b, joint_position)
+        full_jacobian_RF = self.kinDyn.jacobian("r_sole", H_b, joint_position)
+
+        # Check which foot is lower to determine support foot (gamma=1 for LF support, gamma=0 for RF support)
+        self.kinDyn_idyntree.setRobotState(H_b.numpy(), joint_position.detach().numpy(), V_b.detach().numpy(), joint_velocity.detach().numpy(), self.g)
+        H_LF = self.kinDyn_idyntree.getWorldTransform("l_sole")
+        H_RF = self.kinDyn_idyntree.getWorldTransform("r_sole")
+        gamma = 1 if (H_LF.getPosition().toNumPy()[-1] < H_RF.getPosition().toNumPy()[-1]) else 0
+
+        V_b_label = - gamma * torch.inverse(full_jacobian_LF[:,:6]) @ full_jacobian_LF[:,6:] @ joint_velocity \
+                    - (1 - gamma) * torch.inverse(full_jacobian_RF[:,:6]) @ full_jacobian_RF[:,6:] @ joint_velocity
+
+        return V_b_label
+
     def get_pi_loss_components(self, X: torch.Tensor, pred: torch.Tensor) -> (torch.Tensor, torch.Tensor):
 
             batch_size = len(X)
@@ -204,24 +223,8 @@ class MANN(nn.Module):
             V_b_label_array = []
 
             # Calculate Vb from data for each elem
-            for i in range(batch_size):
-
-                # Get a base transform matrix from the data (not prediction) base position and quaternion
-                H_b = SpatialMath().H_from_Pos_RPY(base_position_batch[i,:], self.quaternion_to_rpy(base_quaternion_batch[i,:])).array
-                full_jacobian_LF = self.kinDyn.jacobian("l_sole", H_b, joint_position_batch[i,:])
-                full_jacobian_RF = self.kinDyn.jacobian("r_sole", H_b, joint_position_batch[i,:])
-
-                # Check which foot is lower to determine support foot (gamma=1 for LF support, gamma=0 for RF support)
-                self.kinDyn_idyntree.setRobotState(H_b.numpy(), joint_position_batch[i,:].detach().numpy(), V_b[i,:].detach().numpy(), joint_velocity_batch[i,:].detach().numpy(), self.g)
-                H_LF = self.kinDyn_idyntree.getWorldTransform("l_sole")
-                H_RF = self.kinDyn_idyntree.getWorldTransform("r_sole")
-                gamma = 1 if (H_LF.getPosition().toNumPy()[-1] < H_RF.getPosition().toNumPy()[-1]) else 0
-
-                V_b_label = - gamma * torch.inverse(full_jacobian_LF[:,:6]) @ full_jacobian_LF[:,6:] @ joint_velocity_batch[i,:] \
-                            - (1 - gamma) * torch.inverse(full_jacobian_RF[:,:6]) @ full_jacobian_RF[:,6:] @ joint_velocity_batch[i,:]
-                V_b_label_array.append(V_b_label)
-
-            V_b_label_tensor = torch.stack(V_b_label_array)
+            batched_V_b_label_fn = torch.vmap(compute_Vb_label)
+            V_b_label_tensor = batched_V_b_label_fn(base_position_batch, base_quaternion_batch, joint_position_batch, V_b, joint_velocity_batch)
 
             return V_b_label_tensor, V_b
 
