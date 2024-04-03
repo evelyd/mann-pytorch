@@ -11,11 +11,14 @@ from torch.utils.data.dataloader import DataLoader
 from mann_pytorch.GatingNetwork import GatingNetwork
 from torch.utils.tensorboard.writer import SummaryWriter
 from mann_pytorch.MotionPredictionNetwork import MotionPredictionNetwork
-from gym_ignition.rbd.idyntree import kindyncomputations
+
+import adam
+from adam.pytorch import KinDynComputations
+import icub_models
+from adam.pytorch.torch_like import SpatialMath
+import idyntree.swig as idyntree
 
 from typing import List
-import numpy as np
-from gym_ignition.rbd.idyntree import numpy
 
 
 class MANN(nn.Module):
@@ -24,7 +27,8 @@ class MANN(nn.Module):
     def __init__(self, train_dataloader: DataLoader, test_dataloader: DataLoader,
                  num_experts: int, gn_hidden_size: int, mpn_hidden_size: int, dropout_probability: float,
                  savepath: str,
-                 kindyn: kindyncomputations.KinDynComputations):
+                 kinDyn: KinDynComputations,
+                 kinDyn_idyntree: idyntree.KinDynComputations):
         """Mode-Adaptive Neural Network constructor.
 
         Args:
@@ -62,7 +66,11 @@ class MANN(nn.Module):
         self.savepath = savepath
 
         # Store the kindyn object
-        self.kindyn = kindyn
+        self.kinDyn = kinDyn
+        self.kinDyn_idyntree = kinDyn_idyntree
+
+        # Store values that are constant for PI loss
+        self.g = (torch.tensor([0, 0, -9.80665])).numpy()
 
         self.pi_weight = 10.0
 
@@ -72,7 +80,8 @@ class MANN(nn.Module):
         # method to avoid modifying the original state.
         state = self.__dict__.copy()
         # Remove the unpicklable entries.
-        del state['kindyn']
+        del state['kinDyn']
+        del state['kinDyn_idyntree']
         return state
 
     def __setstate__(self, state):
@@ -146,14 +155,28 @@ class MANN(nn.Module):
 
         return X
 
-    def reset_robot_configuration(self, joint_positions: List, base_position: List, base_quaternion: List) -> None:
-        """Reset the robot configuration."""
+    def quaternion_to_rpy(self, quaternion: torch.Tensor):
+        # Normalize quaternion
+        quaternion = quaternion / torch.norm(quaternion)
 
-        world_H_base = numpy.FromNumPy.to_idyntree_transform(
-            position=np.array(base_position),
-            quaternion=np.array(base_quaternion)).asHomogeneousTransform().toNumPy()
+        # Extract individual components of the quaternion
+        w, x, y, z = quaternion #this is the same quaternion repr as in features extraction, see https://github.com/ami-iit/element_motion-generation-with-ml/issues/36#issuecomment-1424256115
 
-        self.kindyn.set_robot_state(s=joint_positions, ds=np.zeros(len(joint_positions)), world_H_base=world_H_base)
+        # Compute roll (x-axis rotation)
+        roll = torch.atan2(2*(w*x + y*z), 1 - 2*(x**2 + y**2))
+
+        # Compute pitch (y-axis rotation)
+        sin_pitch = 2*(w*y - z*x)
+        pitch = torch.where(torch.abs(sin_pitch) >= 1,
+                            torch.sign(sin_pitch) * torch.tensor(np.pi / 2),
+                            torch.asin(sin_pitch))
+
+        # Compute yaw (z-axis rotation)
+        yaw = torch.atan2(2*(w*z + x*y), 1 - 2*(y**2 + z**2))
+
+        rpy = torch.tensor([roll, pitch, yaw])
+
+        return rpy
 
     def get_pi_loss_components(self, X: torch.Tensor, pred: torch.Tensor) -> (torch.Tensor, torch.Tensor):
 
@@ -168,9 +191,7 @@ class MANN(nn.Module):
             pred = self.denormalize(pred, Ymean, Ystd)
 
             #Get base position and orientation from data for robot state update
-            # joint_position_batch = X[:,72:98]#this is the previous timestep, current one should be in the label
-            # joint_velocity_batch = X[:,98:124] #this is the previous timestep, current one should be in the label
-            base_position_batch = X[:,124:127] #with test_pi_improvements element code, should now be the correct timestep (current)
+            base_position_batch = X[:,124:127]
             base_quaternion_batch = X[:,127:]
 
             # Get Vb from network output
@@ -185,33 +206,19 @@ class MANN(nn.Module):
             # Calculate Vb from data for each elem
             for i in range(batch_size):
 
-                # Update robot configuration
-                self.reset_robot_configuration(joint_positions=joint_position_batch[i,:].detach().numpy(),
-                                           base_position=base_position_batch[i,:],
-                                           base_quaternion=base_quaternion_batch[i,:])
-
-                # Get transforms for feet
-                world_H_base = self.kindyn.get_world_base_transform()
-                base_H_LF = self.kindyn.get_relative_transform(ref_frame_name="root_link", frame_name="l_sole")
-                W_H_LF = world_H_base.dot(base_H_LF)
-                base_H_RF = self.kindyn.get_relative_transform(ref_frame_name="root_link", frame_name="r_sole")
-                W_H_RF = world_H_base.dot(base_H_RF)
+                # Get a base transform matrix from the data (not prediction) base position and quaternion
+                H_b = SpatialMath().H_from_Pos_RPY(base_position_batch[i,:], self.quaternion_to_rpy(base_quaternion_batch[i,:])).array
+                full_jacobian_LF = self.kinDyn.jacobian("l_sole", H_b, joint_position_batch[i,:])
+                full_jacobian_RF = self.kinDyn.jacobian("r_sole", H_b, joint_position_batch[i,:])
 
                 # Check which foot is lower to determine support foot (gamma=1 for LF support, gamma=0 for RF support)
-                if W_H_LF[2,-1] < W_H_RF[2,-1]:
-                    gamma = 1
-                else:
-                    gamma = 0
+                self.kinDyn_idyntree.setRobotState(H_b.numpy(), joint_position_batch[i,:].detach().numpy(), V_b[i,:].detach().numpy(), joint_velocity_batch[i,:].detach().numpy(), self.g)
+                H_LF = self.kinDyn_idyntree.getWorldTransform("l_sole")
+                H_RF = self.kinDyn_idyntree.getWorldTransform("r_sole")
+                gamma = 1 if (H_LF.getPosition().toNumPy()[-1] < H_RF.getPosition().toNumPy()[-1]) else 0
 
-                # Get foot Jacobians (expressed in base frame)
-                lf_jacobian = self.kindyn.get_frame_jacobian("l_sole")
-
-                rf_jacobian = self.kindyn.get_frame_jacobian("r_sole")
-
-                V_b_label = - gamma * torch.matmul(torch.linalg.inv(torch.from_numpy(lf_jacobian[:,:6])), \
-                                                  (torch.matmul(torch.from_numpy(lf_jacobian[:,6:]), joint_velocity_batch[i,:]))) \
-                            - (1 - gamma) * torch.matmul(torch.linalg.inv(torch.from_numpy(rf_jacobian[:,:6])), \
-                                                        (torch.matmul(torch.from_numpy(rf_jacobian[:,6:]), joint_velocity_batch[i,:])))
+                V_b_label = - gamma * torch.inverse(full_jacobian_LF[:,:6]) @ full_jacobian_LF[:,6:] @ joint_velocity_batch[i,:] \
+                            - (1 - gamma) * torch.inverse(full_jacobian_RF[:,:6]) @ full_jacobian_RF[:,6:] @ joint_velocity_batch[i,:]
                 V_b_label_array.append(V_b_label)
 
             V_b_label_tensor = torch.stack(V_b_label_array)
