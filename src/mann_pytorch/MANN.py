@@ -155,38 +155,50 @@ class MANN(nn.Module):
 
         return X
 
-    def quaternion_to_rpy(self, quaternion: torch.Tensor):
+    def quaternion_position_to_transform(self, quaternion: torch.Tensor, position: torch.Tensor):
         # Normalize quaternion
         quaternion = quaternion / torch.norm(quaternion)
 
         # Extract individual components of the quaternion
-        w, x, y, z = quaternion #this is the same quaternion repr as in features extraction, see https://github.com/ami-iit/element_motion-generation-with-ml/issues/36#issuecomment-1424256115
+        w, x, y, z = quaternion.unbind(dim=-1)
 
-        # Compute roll (x-axis rotation)
-        roll = torch.atan2(2*(w*x + y*z), 1 - 2*(x**2 + y**2))
+        # Compute rotation matrix components
+        xx = x * x
+        xy = x * y
+        xz = x * z
+        yy = y * y
+        yz = y * z
+        zz = z * z
+        wx = w * x
+        wy = w * y
+        wz = w * z
 
-        # Compute pitch (y-axis rotation)
-        sin_pitch = 2*(w*y - z*x)
-        pitch = torch.where(torch.abs(sin_pitch) >= 1,
-                            torch.sign(sin_pitch) * torch.tensor(np.pi / 2),
-                            torch.asin(sin_pitch))
+        rotation_matrix = torch.stack([
+            1 - 2 * (yy + zz), 2 * (xy - wz), 2 * (xz + wy),
+            2 * (xy + wz), 1 - 2 * (xx + zz), 2 * (yz - wx),
+            2 * (xz - wy), 2 * (yz + wx), 1 - 2 * (xx + yy)
+            ], dim=-1).reshape(quaternion.shape[:-1] + (3, 3))
 
-        # Compute yaw (z-axis rotation)
-        yaw = torch.atan2(2*(w*z + x*y), 1 - 2*(y**2 + z**2))
+        # Stack rotation matrix with position
+        transformation_matrix = torch.cat([
+            torch.cat([rotation_matrix, position.unsqueeze(-1)], dim=-1),
+            torch.tensor([0, 0, 0, 1], dtype=quaternion.dtype, device=quaternion.device).expand(position.shape[:-1] + (1, 4))
+            ], dim=-2)
 
-        rpy = torch.tensor([roll, pitch, yaw])
+        return transformation_matrix
 
-        return rpy
-
+    #TODO remove self from passed variables (arg that isn't vectorized)
     def compute_Vb_label(self, base_position: torch.Tensor, base_quaternion: torch.Tensor, joint_position: torch.Tensor, V_b: torch.Tensor,
                          joint_velocity: torch.Tensor) -> torch.Tensor:
 
         # Get a base transform matrix from the data (not prediction) base position and quaternion
-        H_b = SpatialMath().H_from_Pos_RPY(base_position, self.quaternion_to_rpy(base_quaternion)).array
+        #TODO use Hb that comes somehow from the output of the network
+        H_b = self.quaternion_position_to_transform(base_quaternion, base_position)
         full_jacobian_LF = self.kinDyn.jacobian("l_sole", H_b, joint_position)
         full_jacobian_RF = self.kinDyn.jacobian("r_sole", H_b, joint_position)
 
         # Check which foot is lower to determine support foot (gamma=1 for LF support, gamma=0 for RF support)
+        #TODO this needs to be done in a way that's attached to the gradient!! currently it is not and also throws vmap error
         self.kinDyn_idyntree.setRobotState(H_b.numpy(), joint_position.detach().numpy(), V_b.detach().numpy(), joint_velocity.detach().numpy(), self.g)
         H_LF = self.kinDyn_idyntree.getWorldTransform("l_sole")
         H_RF = self.kinDyn_idyntree.getWorldTransform("r_sole")
@@ -223,7 +235,7 @@ class MANN(nn.Module):
             V_b_label_array = []
 
             # Calculate Vb from data for each elem
-            batched_V_b_label_fn = torch.vmap(compute_Vb_label)
+            batched_V_b_label_fn = torch.vmap(self.compute_Vb_label)
             V_b_label_tensor = batched_V_b_label_fn(base_position_batch, base_quaternion_batch, joint_position_batch, V_b, joint_velocity_batch)
 
             return V_b_label_tensor, V_b
