@@ -14,9 +14,6 @@ from mann_pytorch.MotionPredictionNetwork import MotionPredictionNetwork
 
 import adam
 from adam.pytorch import KinDynComputations
-import icub_models
-from adam.pytorch.torch_like import SpatialMath
-import idyntree.swig as idyntree
 
 from typing import List
 
@@ -27,8 +24,7 @@ class MANN(nn.Module):
     def __init__(self, train_dataloader: DataLoader, test_dataloader: DataLoader,
                  num_experts: int, gn_hidden_size: int, mpn_hidden_size: int, dropout_probability: float,
                  savepath: str,
-                 kinDyn: KinDynComputations,
-                 kinDyn_idyntree: idyntree.KinDynComputations):
+                 kinDyn: KinDynComputations):
         """Mode-Adaptive Neural Network constructor.
 
         Args:
@@ -67,10 +63,6 @@ class MANN(nn.Module):
 
         # Store the kindyn object
         self.kinDyn = kinDyn
-        self.kinDyn_idyntree = kinDyn_idyntree
-
-        # Store values that are constant for PI loss
-        self.g = (torch.tensor([0, 0, -9.80665])).numpy()
 
         self.pi_weight = 10.0
 
@@ -81,7 +73,6 @@ class MANN(nn.Module):
         state = self.__dict__.copy()
         # Remove the unpicklable entries.
         del state['kinDyn']
-        del state['kinDyn_idyntree']
         return state
 
     def __setstate__(self, state):
@@ -187,7 +178,7 @@ class MANN(nn.Module):
 
         return transformation_matrix
 
-    #TODO remove self from passed variables (arg that isn't vectorized)
+    #TODO remove self from passed variables (arg that isn't vectorized)?
     def compute_Vb_label(self, base_position: torch.Tensor, base_quaternion: torch.Tensor, joint_position: torch.Tensor, V_b: torch.Tensor,
                          joint_velocity: torch.Tensor) -> torch.Tensor:
 
@@ -198,11 +189,11 @@ class MANN(nn.Module):
         full_jacobian_RF = self.kinDyn.jacobian("r_sole", H_b, joint_position)
 
         # Check which foot is lower to determine support foot (gamma=1 for LF support, gamma=0 for RF support)
-        #TODO this needs to be done in a way that's attached to the gradient!! currently it is not and also throws vmap error
-        self.kinDyn_idyntree.setRobotState(H_b.numpy(), joint_position.detach().numpy(), V_b.detach().numpy(), joint_velocity.detach().numpy(), self.g)
-        H_LF = self.kinDyn_idyntree.getWorldTransform("l_sole")
-        H_RF = self.kinDyn_idyntree.getWorldTransform("r_sole")
-        gamma = 1 if (H_LF.getPosition().toNumPy()[-1] < H_RF.getPosition().toNumPy()[-1]) else 0
+        H_LF = self.kinDyn.forward_kinematics("l_sole", H_b, joint_position)
+        H_RF = self.kinDyn.forward_kinematics("r_sole", H_b, joint_position)
+        z_diff = H_LF[2,3] - H_RF[2,3]
+        condition = z_diff > 0
+        gamma = torch.where(condition, 0, 1)
 
         V_b_label = - gamma * torch.inverse(full_jacobian_LF[:,:6]) @ full_jacobian_LF[:,6:] @ joint_velocity \
                     - (1 - gamma) * torch.inverse(full_jacobian_RF[:,:6]) @ full_jacobian_RF[:,6:] @ joint_velocity
@@ -261,8 +252,6 @@ class MANN(nn.Module):
         # Print the learning rate and weight decay of the current epoch
         print('Current lr:', optimizer.param_groups[0]['lr'])
         print('Current wd:', optimizer.param_groups[0]['weight_decay'])
-
-        # vel_norms = []
 
         # Iterate over batches
         for batch, (X, y) in enumerate(self.train_dataloader):
