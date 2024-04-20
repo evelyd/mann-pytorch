@@ -151,7 +151,7 @@ class MANN(nn.Module):
         quaternion = quaternion / torch.norm(quaternion)
 
         # Extract individual components of the quaternion
-        w, x, y, z = quaternion.unbind(dim=-1)
+        x, y, z, w = quaternion.unbind(dim=-1)
 
         # Compute rotation matrix components
         xx = x * x
