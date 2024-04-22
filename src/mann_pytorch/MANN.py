@@ -16,6 +16,7 @@ import adam
 from adam.pytorch import KinDynComputations
 
 from typing import List
+import pathlib
 
 
 class MANN(nn.Module):
@@ -187,6 +188,8 @@ class MANN(nn.Module):
         H_b = self.quaternion_position_to_transform(base_quaternion, base_position)
         full_jacobian_LF = self.kinDyn.jacobian("l_sole", H_b, joint_position)
         full_jacobian_RF = self.kinDyn.jacobian("r_sole", H_b, joint_position)
+        print("J adam first one: ", full_jacobian_RF)
+        input("next timestep")
 
         # Check which foot is lower to determine support foot (gamma=1 for LF support, gamma=0 for RF support)
         H_LF = self.kinDyn.forward_kinematics("l_sole", H_b, joint_position)
@@ -194,6 +197,7 @@ class MANN(nn.Module):
         z_diff = H_LF[2,3] - H_RF[2,3]
         condition = z_diff > 0
         gamma = torch.where(condition, 0, 1)
+        # gamma = 1
 
         V_b_label = - gamma * torch.inverse(full_jacobian_LF[:,:6]) @ full_jacobian_LF[:,6:] @ joint_velocity \
                     - (1 - gamma) * torch.inverse(full_jacobian_RF[:,:6]) @ full_jacobian_RF[:,6:] @ joint_velocity
@@ -223,7 +227,48 @@ class MANN(nn.Module):
             joint_velocity_batch = pred[:,-26:]
             V_b = torch.cat((V_b_linear, V_b_angular), 1)
 
+            # joint_position_batch = torch.zeros_like(joint_position_batch)
+            # base_position_batch = torch.zeros_like(base_position_batch)
+            # base_quaternion_batch = torch.tensor([0., 0., 0., 1.]).repeat(batch_size, 1)
+
             V_b_label_array = []
+
+            #====================================================
+            import idyntree.swig as idyn
+
+            urdf_path = pathlib.Path("../src/adherent/model/ergoCubGazeboV1_xsens/ergoCubGazeboV1_xsens.urdf")
+
+            # Define the joints of interest for the features computation and their associated indexes in the robot joints  list
+            controlled_joints = ['l_hip_pitch', 'l_hip_roll', 'l_hip_yaw', 'l_knee', 'l_ankle_pitch', 'l_ankle_roll',  # left leg
+                                'r_hip_pitch', 'r_hip_roll', 'r_hip_yaw', 'r_knee', 'r_ankle_pitch', 'r_ankle_roll',  # right leg
+                                'torso_pitch', 'torso_roll', 'torso_yaw',  # torso
+                                'neck_pitch', 'neck_roll', 'neck_yaw', # neck
+                                'l_shoulder_pitch', 'l_shoulder_roll', 'l_shoulder_yaw', 'l_elbow', # left arm
+                                'r_shoulder_pitch', 'r_shoulder_roll', 'r_shoulder_yaw', 'r_elbow'] # right arm
+
+            model_loader = idyn.ModelLoader()
+            assert model_loader.loadReducedModelFromFile(str(urdf_path), controlled_joints)
+
+            # create KinDynComputationsDescriptor
+            kindyn = idyn.KinDynComputations()
+            assert kindyn.loadRobotModel(model_loader.model())
+            kindyn.setFrameVelocityRepresentation(idyn.BODY_FIXED_REPRESENTATION)
+            dofs = kindyn.model().getNrOfDOFs()
+            joint_position = idyn.VectorDynSize.FromPython(joint_position_batch.detach().numpy()[0,:])
+            joint_vel_zeros = np.zeros(shape=(26))
+            joint_velocity = idyn.VectorDynSize.FromPython(joint_vel_zeros)
+            H_b = self.quaternion_position_to_transform(base_quaternion_batch[0,:], base_position_batch[0,:])
+            H_idyn = idyn.Transform()
+            H_idyn.fromHomogeneousTransform(idyn.Matrix4x4.FromPython(H_b))
+
+            twist = idyn.Twist().Zero()
+            kindyn.setRobotState(H_idyn, joint_position, twist, joint_velocity, idyn.Vector3([0.0, 0.0, -9.81]))
+
+            jac = idyn.MatrixDynSize(6,6+dofs)
+            kindyn.getFrameFreeFloatingJacobian("r_sole", jac)
+            print("J LF idyntree: ", jac.toString())
+
+            #====================================================
 
             # Calculate Vb from data for each elem
             batched_V_b_label_fn = torch.vmap(self.compute_Vb_label)
