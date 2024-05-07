@@ -5,6 +5,7 @@ import numpy as np
 
 import torch
 from torch import nn
+import torch.autograd.gradcheck
 from torch.optim import Optimizer
 from torch.nn.modules.loss import _Loss
 from torch.utils.data.dataloader import DataLoader
@@ -66,6 +67,10 @@ class MANN(nn.Module):
         self.kinDyn = kinDyn
 
         self.pi_weight = 10.0
+
+        #TODO values for calculating dJ/dt
+        self.prev_jacobian_LF = None
+        self.prev_jacobian_RF = None
 
     def __getstate__(self):
         # Copy the object's state from self.__dict__ which contains
@@ -197,7 +202,40 @@ class MANN(nn.Module):
         z_diff = H_LF[2,3] - H_RF[2,3]
         condition = z_diff > 0
         gamma = torch.where(condition, 0, 1)
-        # gamma = 1
+
+        # print("adam H_LF: ", H_LF)
+        # print("adam H_RF: ", H_RF)
+        # print("adam gamma: ", gamma)
+        torch.set_printoptions(threshold=10_000)
+
+        #TODO check the jacobian gradient dJ/dt=dJ/ds * ds/dt
+        if (self.prev_jacobian_LF is not None):
+            # Calculate dJ/dt
+            # print("full jac LF: ", full_jacobian_LF)
+            # print("prev jac LF: ", self.prev_jacobian_LF)
+            dJ_LF = full_jacobian_LF - self.prev_jacobian_LF
+            # print("dj LF: ", dJ_LF)
+            dJ_RF = full_jacobian_RF - self.prev_jacobian_RF
+            dt = 1/50
+            dJdt_LF = dJ_LF / dt
+            print("dJdt LF naive: ", dJdt_LF[0])
+            # input("continue")
+            #TODO give this more sig figs
+        self.prev_jacobian_LF = full_jacobian_LF
+        self.prev_jacobian_RF = full_jacobian_RF
+
+        #TODO calculate adam jdot
+        full_jacobian_dot_LF = self.kinDyn.jacobian_dot("l_sole", H_b, joint_position, V_b, joint_velocity)
+        print("adam Jdot: ", full_jacobian_dot_LF[0])
+        # input("just showed LF, press to continue")
+        full_jacobian_dot_RF = self.kinDyn.jacobian_dot("r_sole", H_b, joint_position, V_b, joint_velocity)
+
+        #TODO check the gradient with gradcheck
+
+        # TODO save previous timestep J and s in order to compute dJ/ds=(Js1-Js0)/delta s
+        #they should agree
+        # print("adam jacobian gradient wrt s: ", )
+        # input("next timestep")
 
         V_b_label = - gamma * torch.inverse(full_jacobian_LF[:,:6]) @ full_jacobian_LF[:,6:] @ joint_velocity \
                     - (1 - gamma) * torch.inverse(full_jacobian_RF[:,:6]) @ full_jacobian_RF[:,6:] @ joint_velocity
@@ -226,6 +264,14 @@ class MANN(nn.Module):
             joint_position_batch = pred[:, -52:-26]
             joint_velocity_batch = pred[:,-26:]
             V_b = torch.cat((V_b_linear, V_b_angular), 1)
+
+            # print(pred[0,:])
+            # print(V_b_linear[0,:])
+            # print(V_b_angular[0,:])
+            # print(joint_position_batch[0,:])
+            # print(joint_velocity_batch[0,:])
+            # print(base_position_batch[0,:])
+            # print(base_angle_batch[0,:])
 
             # joint_position_batch = torch.zeros_like(joint_position_batch)
             # base_position_batch = torch.zeros_like(base_position_batch)
@@ -266,7 +312,14 @@ class MANN(nn.Module):
 
             jac = idyn.MatrixDynSize(6,6+dofs)
             kindyn.getFrameFreeFloatingJacobian("r_sole", jac)
-            print("J LF idyntree: ", jac.toString())
+            # print("J LF idyntree: ", jac.toString())
+
+            H_LF = kindyn.getWorldTransform("l_sole")
+            H_RF = kindyn.getWorldTransform("r_sole")
+            gamma = 1 if (H_LF.getPosition().toNumPy()[-1] < H_RF.getPosition().toNumPy()[-1]) else 0
+
+            print("idyntree H_LF: ", H_LF)
+            print("idyntree H_RF: ", H_RF)
 
             #====================================================
 
@@ -307,6 +360,11 @@ class MANN(nn.Module):
             # Add MSE of Vb and Vbpred
             V_b_label_tensor, V_b = self.get_pi_loss_components(X, pred)
             pi_loss = self.pi_weight * loss_fn(V_b_label_tensor, V_b)
+
+            #TODO check gradient of pi loss component
+            check = torch.autograd.gradcheck(self.get_pi_loss_components, (X, pred), check_batched_grad=True, rtol=1e-05, atol=1e-08)
+            print(check)
+            input("next batch")
 
             loss = mse_loss + pi_loss
 
