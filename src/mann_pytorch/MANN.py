@@ -41,7 +41,7 @@ class MANN(nn.Module):
 
         # Retrieve input and output dimensions from the training dataset
         train_features, train_labels = next(iter(train_dataloader))
-        input_size = 124 # cut off the features only used for the loss function calculations
+        input_size = train_features.size()[-1]
         output_size = train_labels.size()[-1]
 
         # Define the two subnetworks composing the MANN architecture
@@ -146,7 +146,38 @@ class MANN(nn.Module):
 
         return X
 
+    def euler_to_quaternion(self, angle):
+        """
+        Convert Euler angles to quaternion representation.
+
+        Args:
+            angle: Tensor containing xyz Euler angles
+
+        Returns:
+            quaternions: Tensor containing quaternions in xyzw format.
+        """
+
+        roll, pitch, yaw = angle.unbind(dim=-1)
+
+        # print(angle)
+
+        cy = torch.cos(yaw * 0.5)
+        sy = torch.sin(yaw * 0.5)
+        cp = torch.cos(pitch * 0.5)
+        sp = torch.sin(pitch * 0.5)
+        cr = torch.cos(roll * 0.5)
+        sr = torch.sin(roll * 0.5)
+
+        qw = cy * cp * cr + sy * sp * sr
+        qx = cy * cp * sr - sy * sp * cr
+        qy = sy * cp * sr + cy * sp * cr
+        qz = sy * cp * cr - cy * sp * sr
+
+        return torch.stack((qx, qy, qz, qw), dim=-1)
+
     def quaternion_position_to_transform(self, quaternion: torch.Tensor, position: torch.Tensor):
+
+        # print(quaternion)
         # Normalize quaternion
         quaternion = quaternion / torch.norm(quaternion)
 
@@ -179,11 +210,12 @@ class MANN(nn.Module):
         return transformation_matrix
 
     #TODO remove self from passed variables (arg that isn't vectorized)?
-    def compute_Vb_label(self, base_position: torch.Tensor, base_quaternion: torch.Tensor, joint_position: torch.Tensor, V_b: torch.Tensor,
+    def compute_Vb_label(self, base_position: torch.Tensor, base_angle: torch.Tensor, joint_position: torch.Tensor, V_b: torch.Tensor,
                          joint_velocity: torch.Tensor) -> torch.Tensor:
 
         # Get a base transform matrix from the data (not prediction) base position and quaternion
         #TODO use Hb that comes somehow from the output of the network
+        base_quaternion = self.euler_to_quaternion(base_angle)
         H_b = self.quaternion_position_to_transform(base_quaternion, base_position)
         full_jacobian_LF = self.kinDyn.jacobian("l_sole", H_b, joint_position)
         full_jacobian_RF = self.kinDyn.jacobian("r_sole", H_b, joint_position)
@@ -219,15 +251,17 @@ class MANN(nn.Module):
             # Get Vb from network output
             V_b_linear = pred[:,:3]
             V_b_angular = pred[:,21:24]
-            joint_position_batch = pred[:, -52:-26]
-            joint_velocity_batch = pred[:,-26:]
+            joint_position_batch = pred[:, 42:68]
+            joint_velocity_batch = pred[:,68:94]
+            base_position_batch = pred[:,-6:-3]
+            base_angle_batch = pred[:,-3:]
             V_b = torch.cat((V_b_linear, V_b_angular), 1)
 
             V_b_label_array = []
 
             # Calculate Vb from data for each elem
             batched_V_b_label_fn = torch.vmap(self.compute_Vb_label)
-            V_b_label_tensor = batched_V_b_label_fn(base_position_batch, base_quaternion_batch, joint_position_batch, V_b, joint_velocity_batch)
+            V_b_label_tensor = batched_V_b_label_fn(base_position_batch, base_angle_batch, joint_position_batch, V_b, joint_velocity_batch)
 
             return V_b_label_tensor, V_b
 
@@ -256,7 +290,7 @@ class MANN(nn.Module):
         # Iterate over batches
         for batch, (X, y) in enumerate(self.train_dataloader):
 
-            pred = self(X[:,:124].float()).double()
+            pred = self(X.float()).double()
             mse_loss = loss_fn(pred, y)
 
             # Add MSE of Vb and Vbpred
@@ -320,7 +354,7 @@ class MANN(nn.Module):
             # Iterate over the testing dataset
             for X, y in self.test_dataloader:
 
-                pred = self(X[:,:124].float()).double()
+                pred = self(X.float()).double()
                 cumulative_test_mse_loss += loss_fn(pred, y).item()
 
                 V_b_label_tensor, V_b = self.get_pi_loss_components(X, pred)
