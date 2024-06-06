@@ -141,6 +141,10 @@ class MANN(nn.Module):
     def denormalize(self, X: torch.Tensor, Xmean: torch.Tensor, Xstd: torch.Tensor) -> torch.Tensor:
         """Denormalize X, given its mean and std."""
 
+        if torch.cuda.is_available:
+            Xmean = Xmean.to('cuda')
+            Xstd = Xstd.to('cuda')
+
         # Denormalize
         X = X * Xstd + Xmean
 
@@ -245,8 +249,8 @@ class MANN(nn.Module):
             pred = self.denormalize(pred, Ymean, Ystd)
 
             #Get base position and orientation from data for robot state update
-            base_position_batch = X[:,124:127]
-            base_quaternion_batch = X[:,127:]
+            # base_position_batch = X[:,124:127]
+            # base_quaternion_batch = X[:,127:]
 
             # Get Vb from network output
             V_b_linear = pred[:,:3]
