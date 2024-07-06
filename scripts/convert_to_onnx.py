@@ -27,6 +27,9 @@ def convert_model(model_path: Path, onnx_model_path: Path, normalization_folder:
     Y_std = read_from_file(str(normalization_folder / "Y_std.txt"))
     Y_std[np.where(Y_std <= 1e-4)] = 1
 
+    # Choose the device to use
+    device = torch.device("cuda:0" if (next(mann_restored.parameters()).get_device() == 0) else "cpu")
+
     # the normalization is
     # x_norm = (x - x_mean) / x_std
     # it is possible to convert it in a linear layer by massaging the equation
@@ -51,6 +54,11 @@ def convert_model(model_path: Path, onnx_model_path: Path, normalization_folder:
     # Input to the model
     batch_size = 1
     x = torch.randn(batch_size, input_size, requires_grad=True)
+
+    # Ensure all tensors are on the same device
+    x = x.to(device)
+    lin_normalization.to(device)
+    lin_output_denormalization.to(device)
 
     # Export the model
     torch.onnx.export(extended_model,  # model being run

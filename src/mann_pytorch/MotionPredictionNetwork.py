@@ -69,6 +69,8 @@ class MotionPredictionNetwork(nn.Module):
         # Layer 1
         blended_w0 = torch.einsum("ij,ikl->jkl", blending_coefficients, self.w0)
         blended_b0 = torch.einsum("ij,ikl->jkl", blending_coefficients, self.b0)
+        device = torch.device("cuda:0" if (blended_w0.get_device() == 0) else "cpu")
+        x = x.to(device)
         H0 = torch.matmul(blended_w0, x) + blended_b0
         H0 = self.elu(H0)
         H0 = self.dropout(H0)

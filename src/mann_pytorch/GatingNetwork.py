@@ -63,6 +63,9 @@ class GatingNetwork(nn.Module):
         # Input processing
         x = self.dropout(x)
 
+        device = torch.device("cuda:0" if (self.w0.get_device() == 0) else "cpu")
+        x = x.to(device)
+
         # Layer 1
         H0 = torch.matmul(self.w0, x) + self.b0
         H0 = self.elu(H0)
