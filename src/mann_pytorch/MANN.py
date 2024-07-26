@@ -13,9 +13,14 @@ from torch.utils.tensorboard.writer import SummaryWriter
 from mann_pytorch.MotionPredictionNetwork import MotionPredictionNetwork
 
 import adam
-from adam.pytorch import KinDynComputations
+from adam.pytorch import KinDynComputationsBatch
+from adam.pytorch import KinDynComputations #for ad check
 
 from typing import List
+
+# For Jacobian test
+import pathlib
+import pytest
 
 
 class MANN(nn.Module):
@@ -24,7 +29,7 @@ class MANN(nn.Module):
     def __init__(self, train_dataloader: DataLoader, test_dataloader: DataLoader,
                  num_experts: int, gn_hidden_size: int, mpn_hidden_size: int, dropout_probability: float,
                  savepath: str,
-                 kinDyn: KinDynComputations):
+                 kinDyn: KinDynComputationsBatch):
         """Mode-Adaptive Neural Network constructor.
 
         Args:
@@ -213,26 +218,213 @@ class MANN(nn.Module):
 
         return transformation_matrix
 
+    # Compute the plain Jacobian.
+    # This function will be used to compute the Jacobian derivative with AD.
+    # Given q, computing J̇ by AD-ing this function should work out-of-the-box with
+    # all velocity representations, that are handled internally when computing J.
+    def J_l_sole(self, q) -> torch.Tensor:
+
+        base_position = q[:3]
+        base_quaternion = q[3:7]
+        joint_position = q[7:]
+        H_b = self.quaternion_position_to_transform(base_quaternion, base_position)
+
+        # Retrieve the robot urdf model
+        urdf_path = pathlib.Path("../src/adherent/model/ergoCubGazeboV1_xsens/ergoCubGazeboV1_xsens.urdf")
+
+        # Define the joints of interest for the features computation and their associated indexes in the robot joints  list
+        controlled_joints = ['l_hip_pitch', 'l_hip_roll', 'l_hip_yaw', 'l_knee', 'l_ankle_pitch', 'l_ankle_roll',  # left leg
+                            'r_hip_pitch', 'r_hip_roll', 'r_hip_yaw', 'r_knee', 'r_ankle_pitch', 'r_ankle_roll',  # right leg
+                            'torso_pitch', 'torso_roll', 'torso_yaw',  # torso
+                            'neck_pitch', 'neck_roll', 'neck_yaw', # neck
+                            'l_shoulder_pitch', 'l_shoulder_roll', 'l_shoulder_yaw', 'l_elbow', # left arm
+                            'r_shoulder_pitch', 'r_shoulder_roll', 'r_shoulder_yaw', 'r_elbow'] # right arm
+
+        # Create a KinDynComputations object with adam
+        kinDyn_ad = KinDynComputations(urdf_path, controlled_joints, 'root_link')
+        # choose the representation you want to use the body fixed representation
+        kinDyn_ad.set_frame_velocity_representation(adam.Representations.BODY_FIXED_REPRESENTATION)
+
+        #define a new kindyn object for this test only
+        full_foot_jacobian = kinDyn_ad.jacobian('l_sole', H_b, joint_position)
+
+        return full_foot_jacobian
+
+    def J_r_sole(self, q) -> torch.Tensor: #not sure i can put the kindyn as an object here boh
+
+        base_position = q[:3]
+        base_quaternion = q[3:7]
+        joint_position = q[7:]
+        H_b = self.quaternion_position_to_transform(base_quaternion, base_position)
+
+        # Retrieve the robot urdf model
+        urdf_path = pathlib.Path("../src/adherent/model/ergoCubGazeboV1_xsens/ergoCubGazeboV1_xsens.urdf")
+
+        # Define the joints of interest for the features computation and their associated indexes in the robot joints  list
+        controlled_joints = ['l_hip_pitch', 'l_hip_roll', 'l_hip_yaw', 'l_knee', 'l_ankle_pitch', 'l_ankle_roll',  # left leg
+                            'r_hip_pitch', 'r_hip_roll', 'r_hip_yaw', 'r_knee', 'r_ankle_pitch', 'r_ankle_roll',  # right leg
+                            'torso_pitch', 'torso_roll', 'torso_yaw',  # torso
+                            'neck_pitch', 'neck_roll', 'neck_yaw', # neck
+                            'l_shoulder_pitch', 'l_shoulder_roll', 'l_shoulder_yaw', 'l_elbow', # left arm
+                            'r_shoulder_pitch', 'r_shoulder_roll', 'r_shoulder_yaw', 'r_elbow'] # right arm
+
+        # Create a KinDynComputations object with adam
+        kinDyn_ad = KinDynComputations(urdf_path, controlled_joints, 'root_link')
+        # choose the representation you want to use the body fixed representation
+        kinDyn_ad.set_frame_velocity_representation(adam.Representations.BODY_FIXED_REPRESENTATION)
+
+        #define a new kindyn object for this test only
+        full_foot_jacobian = kinDyn_ad.jacobian('r_sole', H_b, joint_position)
+
+        return full_foot_jacobian
+
+    def compute_q(self, base_position, base_orientation, joint_position) -> torch.Tensor:
+
+        q = torch.hstack(
+            [base_position, base_orientation, joint_position]
+        )
+
+        return q
+
+    def Q(self, q: torch.Tensor) -> torch.Tensor:
+            # Extract individual components of the quaternion
+            qx, qy, qz, qw = q.unbind(dim=-1)
+
+            Q = torch.stack([
+            qw, -qx, -qy, -qz,
+            qx, qw, -qz, qy,
+            qy, qz, qw, -qx,
+            qz, -qy, qx, qw
+            ], dim=-1).reshape(q.shape[:-1] + (4, 4))
+
+            return Q
+
+    def compute_q̇(self, H_b, base_orientation, V_b, joint_velocity) -> torch.Tensor:
+        B_ω_WB = V_b[:,3:6] #have this inside of V_b, already in body fixed
+
+        # need to figure out how to put my linear velocity in mixed repr from body fixed
+        W_ṗ_WB = V_b[:, :3]
+
+        # will have to rotate it by {}^W R_B to get mixed repr
+        W_ṗ_B = (H_b[:, :3,:3] @ W_ṗ_WB.unsqueeze(-1)).squeeze()
+
+        Q = self.Q(base_orientation)
+
+        dot_prod =  torch.einsum('bi,bi->b', B_ω_WB, B_ω_WB)
+        norm_ω = torch.where(dot_prod < (1e-6) ** 2, 1e-6, torch.linalg.norm(B_ω_WB, dim=-1)) #.unsqueeze(-1) #this is dim 32, need to unsqueeze?
+
+        W_Q̇_B = (0.5 * (
+            Q
+            @ torch.hstack(
+                [
+                    (0.0 * norm_ω * (1 - torch.linalg.norm(base_orientation, dim=-1))).unsqueeze(-1),
+                    B_ω_WB,
+                ]
+            ).unsqueeze(-1)
+        )).squeeze()
+
+        q̇ = torch.hstack([W_ṗ_B, W_Q̇_B, joint_velocity])
+
+        return q̇
+
     #TODO remove self from passed variables (arg that isn't vectorized)?
     def compute_Vb_label(self, base_position: torch.Tensor, base_angle: torch.Tensor, joint_position: torch.Tensor, V_b: torch.Tensor,
                          joint_velocity: torch.Tensor) -> torch.Tensor:
 
         # Get a base transform matrix from the data (not prediction) base position and quaternion
-        #TODO use Hb that comes somehow from the output of the network
         base_quaternion = self.euler_to_quaternion(base_angle)
-        H_b = self.quaternion_position_to_transform(base_quaternion, base_position)
+        H_b = self.quaternion_position_to_transform(base_quaternion, base_position).squeeze()
         full_jacobian_LF = self.kinDyn.jacobian("l_sole", H_b, joint_position)
         full_jacobian_RF = self.kinDyn.jacobian("r_sole", H_b, joint_position)
+
+        # Compute AD Jacobian -------------------------------------------------------
+        # Compute q and q̇.
+        q = self.compute_q(base_position, base_quaternion, joint_position)
+        q̇ = self.compute_q̇(H_b, base_quaternion, V_b, joint_velocity)
+
+
+        # def my_jac(H, s):
+            # return self.kinDyn.jacobian("l_sole", H, s)
+        # print("autograd j: ", autograd_j)
+        # dJ_dq_LF = torch.func.jacfwd(self.J_sole)(q)
+        # dJ_dq_LF = torch.func.jacfwd(self.J, argnums=-1)("l_sole", q) # -1 for q being the last arg but the only one to be differentiated
+        # dJ_dq_RF = torch.func.jacfwd(self.J, argnums=-1)("r_sole", q) #
+
+        # print("q̇ size: ", q̇.size())
+
+        # Calculate the Jdot value for each batch element separately
+        dJ_dq_LF = torch.zeros(base_position.size()[0], full_jacobian_LF.size()[1], full_jacobian_LF.size()[2], q.size()[1])
+        dJ_dq_RF = torch.zeros(base_position.size()[0], full_jacobian_LF.size()[1], full_jacobian_LF.size()[2], q.size()[1])
+        # print("empty djdq size: ", dJ_dq_LF.size())
+        for b in range(0, base_position.size()[0]):
+            # Compute dJ/dt with AD.
+            # dJ_dq_LF_b = torch.autograd.functional.jacobian(self.J_l_sole, (q[b,:])) #This is the value that has to be calculated individually
+            # dJ_dq_RF_b = torch.autograd.functional.jacobian(self.J_r_sole, (q[b,:]))
+
+            dJ_dq_LF_b = torch.func.jacfwd(self.J_l_sole)(q[b,:])
+            dJ_dq_RF_b = torch.func.jacfwd(self.J_r_sole)(q[b,:])
+            # print("dJ_dq_LF size: ", dJ_dq_LF.size())
+            # input("continue")
+
+            dJ_dq_LF[b,:, :, :] = dJ_dq_LF_b
+            dJ_dq_RF[b,:, :, :] = dJ_dq_RF_b
+        #TODO stack up all these to create the batch
+
+        #These need to take only the bth element for the calculation
+        #first input: batch, 6, 6+ndof, 7+ndof (bijq)
+        #second input: batch, 7+ndof (bq)
+        # output: batch, 6, 6+ndof (bij)
+        # print(dJ_dq_LF)
+        # print(q̇)
+        q̇ = q̇.unsqueeze(1).unsqueeze(2)
+        O_J̇_ad_WL_I_LF = torch.einsum("bmnq,bijq->bmn", dJ_dq_LF.double(), q̇)
+        # O_J̇_ad_WL_I_RF = torch.einsum("bijq,bqk->bijk", dJ_dq_RF.double(), q̇.unsqueeze(-1)).squeeze(-1)
+
+        # print("O_J̇_ad_WL_I_LF output: ", O_J̇_ad_WL_I_LF.size())
+
+        # Get the generalized velocity.
+        I_ν = torch.hstack([V_b, joint_velocity]).squeeze()
+
+        # Compute J̇.
+        O_J̇_WL_I_LF = self.kinDyn.jacobian_dot("l_sole", H_b, joint_position, V_b, joint_velocity)
+        # O_J̇_WL_I_RF = self.kinDyn.jacobian_dot("r_sole", H_b, joint_position, V_b, joint_velocity)
+
+        # print("O_J̇_WL_I_LF size: ", O_J̇_WL_I_LF.size())
+
+        # Left foot check
+        print(O_J̇_ad_WL_I_LF[0,0,:])
+        print(O_J̇_WL_I_LF[0,0,:])
+        print((O_J̇_ad_WL_I_LF - O_J̇_WL_I_LF)[0,0,:])
+        # print(O_J̇_ad_WL_I_LF[0,:,:,:])
+        assert O_J̇_ad_WL_I_LF.cpu().detach().numpy() == pytest.approx(O_J̇_WL_I_LF.cpu().detach().numpy(), abs=2.0)
+        # assert torch.einsum("l6g,g->l6", O_J̇_ad_WL_I_LF, I_ν) == pytest.approx(
+            # torch.einsum("l6g,g->l6", O_J̇_WL_I_LF, I_ν)
+        # )
+        # Right foot check
+        # assert O_J̇_ad_WL_I_RF.cpu().detach().numpy() == pytest.approx(O_J̇_WL_I_RF.cpu().detach().numpy(), abs=2.0)
+        # assert torch.einsum("l6g,g->l6", O_J̇_ad_WL_I_RF, I_ν) == pytest.approx(
+            # torch.einsum("l6g,g->l6", O_J̇_WL_I_RF, I_ν)
+        # )
+        # Compute AD Jacobian -------------------------------------------------------
 
         # Check which foot is lower to determine support foot (gamma=1 for LF support, gamma=0 for RF support)
         H_LF = self.kinDyn.forward_kinematics("l_sole", H_b, joint_position)
         H_RF = self.kinDyn.forward_kinematics("r_sole", H_b, joint_position)
-        z_diff = H_LF[2,3] - H_RF[2,3]
+        z_diff = H_LF[:,2,3] - H_RF[:,2,3]
         condition = z_diff > 0
         gamma = torch.where(condition, 0, 1)
-
-        V_b_label = - gamma * torch.inverse(full_jacobian_LF[:,:6]) @ full_jacobian_LF[:,6:] @ joint_velocity \
-                    - (1 - gamma) * torch.inverse(full_jacobian_RF[:,:6]) @ full_jacobian_RF[:,6:] @ joint_velocity
+        #so the problem is that the resultant matrix below is not 3 x whatever
+        # print(torch.inverse(full_jacobian_LF[:,:,:6]).size())
+        # print(full_jacobian_LF[:,:,6:].size())
+        # print(joint_velocity.size())
+        # print((torch.einsum("bij,bjk->bik", torch.inverse(full_jacobian_LF[:,:,:6]), full_jacobian_LF[:,:,6:])).size())
+        # print((torch.einsum("bik,bk->bi", torch.einsum("bij,bjk->bik", torch.inverse(full_jacobian_LF[:,:,:6]), full_jacobian_LF[:,:,6:]).double(), joint_velocity)).size())
+        # print(gamma.size())
+        # print((torch.inverse(full_jacobian_LF[:,:,:6]) @ full_jacobian_LF[:,:,6:] @ joint_velocity).size())
+        # V_b_label = - gamma * torch.inverse(full_jacobian_LF[:,:,:6]) @ full_jacobian_LF[:,:,6:] @ joint_velocity \
+                    # - (1 - gamma) * torch.inverse(full_jacobian_RF[:,:,:6]) @ full_jacobian_RF[:,:,6:] @ joint_velocity
+        V_b_label = torch.einsum('b,bi->bi', -gamma, torch.einsum("bik,bk->bi", torch.einsum("bij,bjk->bik", torch.inverse(full_jacobian_LF[:,:,:6]), full_jacobian_LF[:,:,6:]).double(), joint_velocity)) \
+                    - torch.einsum('b,bi->bi', (1 - gamma), torch.einsum("bik,bk->bi", torch.einsum("bij,bjk->bik", torch.inverse(full_jacobian_RF[:,:,:6]), full_jacobian_RF[:,:,6:]).double(), joint_velocity))
 
         return V_b_label
 
@@ -264,8 +456,9 @@ class MANN(nn.Module):
             V_b_label_array = []
 
             # Calculate Vb from data for each elem
-            batched_V_b_label_fn = torch.vmap(self.compute_Vb_label)
-            V_b_label_tensor = batched_V_b_label_fn(base_position_batch, base_angle_batch, joint_position_batch, V_b, joint_velocity_batch)
+            # batched_V_b_label_fn = torch.vmap(self.compute_Vb_label)
+            # V_b_label_tensor = batched_V_b_label_fn(base_position_batch, base_angle_batch, joint_position_batch, V_b, joint_velocity_batch)
+            V_b_label_tensor = self.compute_Vb_label(base_position_batch, base_angle_batch, joint_position_batch, V_b, joint_velocity_batch)
 
             return V_b_label_tensor, V_b
 
