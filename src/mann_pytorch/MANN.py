@@ -13,7 +13,12 @@ from torch.utils.tensorboard.writer import SummaryWriter
 from mann_pytorch.MotionPredictionNetwork import MotionPredictionNetwork
 
 import adam
-from adam.pytorch import KinDynComputations
+
+# for vmapping with jax
+from jax2torch import jax2torch
+import jax.numpy as jnp
+from jax import jit, vmap
+from adam.pytorch import KinDynComputationsBatch
 
 from typing import List
 
@@ -24,7 +29,7 @@ class MANN(nn.Module):
     def __init__(self, train_dataloader: DataLoader, test_dataloader: DataLoader,
                  num_experts: int, gn_hidden_size: int, mpn_hidden_size: int, dropout_probability: float,
                  savepath: str,
-                 kinDyn: KinDynComputations):
+                 kinDyn: KinDynComputationsBatch):
         """Mode-Adaptive Neural Network constructor.
 
         Args:
@@ -217,8 +222,7 @@ class MANN(nn.Module):
     def compute_Vb_label(self, base_position: torch.Tensor, base_angle: torch.Tensor, joint_position: torch.Tensor, V_b: torch.Tensor,
                          joint_velocity: torch.Tensor) -> torch.Tensor:
 
-        # Get a base transform matrix from the data (not prediction) base position and quaternion
-        #TODO use Hb that comes somehow from the output of the network
+        # Get a base transform matrix from the data
         base_quaternion = self.euler_to_quaternion(base_angle)
         H_b = self.quaternion_position_to_transform(base_quaternion, base_position)
         full_jacobian_LF = self.kinDyn.jacobian("l_sole", H_b, joint_position)
@@ -227,12 +231,33 @@ class MANN(nn.Module):
         # Check which foot is lower to determine support foot (gamma=1 for LF support, gamma=0 for RF support)
         H_LF = self.kinDyn.forward_kinematics("l_sole", H_b, joint_position)
         H_RF = self.kinDyn.forward_kinematics("r_sole", H_b, joint_position)
-        z_diff = H_LF[2,3] - H_RF[2,3]
+        z_diff = H_LF[:,2,3] - H_RF[:,2,3]
         condition = z_diff > 0
-        gamma = torch.where(condition, 0, 1)
+        gamma = torch.where(condition, 0, 1).float()
 
-        V_b_label = - gamma * torch.inverse(full_jacobian_LF[:,:6]) @ full_jacobian_LF[:,6:] @ joint_velocity \
-                    - (1 - gamma) * torch.inverse(full_jacobian_RF[:,:6]) @ full_jacobian_RF[:,6:] @ joint_velocity
+        def V_b_label_fun(gamma, full_jacobian_LF, full_jacobian_RF, joint_velocity):
+            # Ensure all inputs are of type torch.float32
+            gamma = gamma.float()
+            full_jacobian_LF = full_jacobian_LF.float()
+            full_jacobian_RF = full_jacobian_RF.float()
+            joint_velocity = joint_velocity.float()
+
+            def fun(gamma, full_jacobian_LF, full_jacobian_RF, joint_velocity):
+                jacobian_LF_inv = jnp.linalg.inv(full_jacobian_LF[:, :6])
+                jacobian_RF_inv = jnp.linalg.inv(full_jacobian_RF[:, :6])
+                M = (- gamma * jacobian_LF_inv @ full_jacobian_LF[:, 6:] @ joint_velocity
+                    - (1 - gamma) * jacobian_RF_inv @ full_jacobian_RF[:, 6:] @ joint_velocity)
+                return M
+
+            vmapped_fun = vmap(fun, in_axes=(0, 0, 0, 0))
+            jit_vmapped_fun = jit(vmapped_fun)
+            return jax2torch(jit_vmapped_fun)
+
+        # Get the function
+        V_b_label_function = V_b_label_fun(gamma, full_jacobian_LF, full_jacobian_RF, joint_velocity)
+
+        # Call the function to get the tensor result
+        V_b_label = V_b_label_function(gamma, full_jacobian_LF, full_jacobian_RF, joint_velocity)
 
         return V_b_label
 
@@ -253,19 +278,16 @@ class MANN(nn.Module):
             # base_quaternion_batch = X[:,127:]
 
             # Get Vb from network output
-            V_b_linear = pred[:,:3]
-            V_b_angular = pred[:,21:24]
-            joint_position_batch = pred[:, 42:68]
-            joint_velocity_batch = pred[:,68:94]
-            base_position_batch = pred[:,-6:-3]
-            base_angle_batch = pred[:,-3:]
-            V_b = torch.cat((V_b_linear, V_b_angular), 1)
-
-            V_b_label_array = []
+            V_b_linear = pred[:,:3].float()
+            V_b_angular = pred[:,21:24].float()
+            joint_position_batch = pred[:, 42:68].float()
+            joint_velocity_batch = pred[:,68:94].float()
+            base_position_batch = pred[:,-6:-3].float()
+            base_angle_batch = pred[:,-3:].float()
+            V_b = torch.cat((V_b_linear, V_b_angular), 1).float()
 
             # Calculate Vb from data for each elem
-            batched_V_b_label_fn = torch.vmap(self.compute_Vb_label)
-            V_b_label_tensor = batched_V_b_label_fn(base_position_batch, base_angle_batch, joint_position_batch, V_b, joint_velocity_batch)
+            V_b_label_tensor = self.compute_Vb_label(base_position_batch, base_angle_batch, joint_position_batch, V_b, joint_velocity_batch)
 
             return V_b_label_tensor, V_b
 
